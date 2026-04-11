@@ -1,0 +1,42 @@
+# Python cache / bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Build / packaging
+build/
+dist/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+
+# Virtual environments
+collapse_env/
+instability_env/
+.venv/
+venv/
+env/
+
+# Experiment artifacts
+output/
+metrics_log.csv
+*.pt
+*.pth
+*.ckpt
+*.onnx
+
+# Local datasets and downloads
+data/
+data_demo/
+data_fresh/
+
+# IDE / editor
+.vscode/
+.idea/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
