@@ -43,19 +43,22 @@ def train_epoch(
     """
     model.train()
     total_loss = 0.0
+    total_samples = 0
 
     for inputs, labels in tqdm(loader, desc="  train", leave=False, disable=not show_progress):
         inputs, labels = inputs.to(device), labels.to(device)
 
-        optimizer.zero_grad()
+        optimizer.zero_grad(set_to_none=True)
         outputs = model(inputs)
         loss = criterion(outputs, labels)
         loss.backward()
         optimizer.step()
 
-        total_loss += loss.item()
+        batch_size = labels.size(0)
+        total_loss += loss.item() * batch_size
+        total_samples += batch_size
 
-    return total_loss / len(loader)
+    return total_loss / max(1, total_samples)
 
 
 @torch.no_grad()
@@ -73,7 +76,7 @@ def eval_epoch(
     ----------
     model     : The network to evaluate.
     loader    : DataLoader for the validation / test set.
-    criterion : Loss function — same instance as used in training.
+    criterion : Loss function - same instance as used in training.
     device    : ``torch.device("cuda")`` or ``torch.device("cpu")``.
 
     Returns
@@ -92,11 +95,12 @@ def eval_epoch(
         outputs = model(inputs)
         loss    = criterion(outputs, labels)
 
-        total_loss    += loss.item()
+        batch_size = labels.size(0)
+        total_loss    += loss.item() * batch_size
         preds          = outputs.argmax(dim=1)
         correct       += preds.eq(labels).sum().item()
-        total_samples += labels.size(0)
+        total_samples += batch_size
 
-    mean_loss = total_loss / len(loader)
+    mean_loss = total_loss / max(1, total_samples)
     accuracy  = correct / total_samples
     return mean_loss, accuracy

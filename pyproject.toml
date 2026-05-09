@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.backends.legacy:build"
+
+[project]
+name = "ndews"
+version = "0.1.0"
+description = "Neural Degeneration Early Warning System — predicts training instability via internal telemetry"
+requires-python = ">=3.10"
+dependencies = [
+    "torch>=2.0,<3.0",
+    "torchvision>=0.15,<1.0",
+    "numpy>=1.24,<3.0",
+    "scikit-learn>=1.3,<2.0",
+    "pandas>=2.0,<3.0",
+    "matplotlib>=3.7,<4.0",
+    "tqdm>=4.65",
+    "PyYAML>=6.0",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["src*", "analysis*"]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+]

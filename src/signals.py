@@ -7,12 +7,12 @@ at epoch end by ``SignalLogger``.
 
 Metrics
 -------
-- Representation entropy
+- Representation effective rank  (replaces softmax entropy — theoretically grounded)
 - Gradient diversity
 - Feature reuse
 - Neuron sparsity
-- Embedding variance
-- Activation variance
+- Representational isotropy      (replaces redundant embedding variance)
+- Activation scale
 
 Usage
 -----
@@ -22,6 +22,17 @@ Usage
         train_epoch(model, ...)
         signals = logger.get_epoch_signals()
     logger.remove_hooks()
+
+Signal keys returned by get_epoch_signals()
+-------------------------------------------
+Each key has the form ``{layer_name}{suffix}`` where suffix is one of:
+
+    _representation_entropy   effective rank of the activation matrix
+    _feature_reuse            mean off-diagonal cosine similarity (Gram)
+    _gradient_diversity       variance of output gradients across the batch
+    _neuron_sparsity          fraction of near-zero activations (adaptive threshold)
+    _representational_isotropy  uniformity of per-dimension variance
+    _activation_scale         global RMS scale of activations
 """
 
 from __future__ import annotations
@@ -30,6 +41,24 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+
+# ---------------------------------------------------------------------------
+# Module-level canonical suffix constants
+# ---------------------------------------------------------------------------
+
+CANONICAL_METRIC_SUFFIXES: tuple[str, ...] = (
+    "_representation_entropy",
+    "_feature_reuse",
+    "_gradient_diversity",
+    "_neuron_sparsity",
+    "_representational_isotropy",
+    "_activation_scale",
+)
+
+
+# ---------------------------------------------------------------------------
+# Shared tensor helpers
+# ---------------------------------------------------------------------------
 
 def _flatten_batch(x: torch.Tensor) -> torch.Tensor:
     """Flatten all non-batch dimensions into one feature axis."""
@@ -47,8 +76,27 @@ def _pool_to_embeddings(x: torch.Tensor) -> torch.Tensor:
     return x.mean(dim=reduce_dims)
 
 
+# ---------------------------------------------------------------------------
+# Hook implementations
+# ---------------------------------------------------------------------------
+
 class RepresentationEntropyHook:
-    """Forward hook for mean Shannon entropy of activations."""
+    """
+    Forward hook measuring the effective rank of the activation matrix.
+
+    Effective rank (Roy & Vetterli, 2007) is defined as:
+
+        R_eff(A) = exp( H( σ / Σσ ) )
+
+    where σ are the singular values of the mean-centred activation matrix
+    A ∈ R^{B × D}.  The result lies in [1, min(B, D)]:
+
+    - Close to 1  → representations collapsed onto ~1 dimension.
+    - Close to D  → representations maximally spread across all dimensions.
+
+    This replaces the previous softmax-entropy formulation, which was
+    sensitive to activation *scale* rather than representational *diversity*.
+    """
 
     def __init__(self) -> None:
         self._values: list[float] = []
@@ -60,13 +108,27 @@ class RepresentationEntropyHook:
         input: tuple[torch.Tensor, ...],
         output: torch.Tensor,
     ) -> None:
-        out = output.detach()
-        if out.size(0) == 0:
+        emb = _pool_to_embeddings(output.detach())  # [B, D]
+        B, D = emb.shape[0], emb.shape[1] if emb.dim() > 1 else 1
+        if B < 2 or D < 2:
             return
-        flat = _flatten_batch(out)
-        p = F.softmax(flat, dim=-1)
-        entropy = -(p * torch.log2(p + 1e-9)).sum(dim=-1).mean()
-        self._values.append(entropy.item())
+
+        emb = emb - emb.mean(dim=0, keepdim=True)  # centre columns
+
+        try:
+            S = torch.linalg.svdvals(emb)  # [min(B, D)], descending
+        except RuntimeError:
+            return
+
+        S = S.clamp(min=0.0)
+        total = S.sum()
+        if total < 1e-9:
+            return
+
+        p = S / total
+        # Shannon entropy in nats, then exponentiate → effective rank
+        H = -(p * torch.log(p + 1e-9)).sum()
+        self._values.append(torch.exp(H).item())
 
     def reset(self) -> None:
         self._values.clear()
@@ -76,7 +138,14 @@ class RepresentationEntropyHook:
 
 
 class FeatureReuseDetector:
-    """Forward hook for average inter-feature correlation magnitude."""
+    """
+    Forward hook for average off-diagonal cosine similarity of feature columns.
+
+    Computes a Gram-matrix of centred, L2-normalised feature columns.  The
+    mean absolute off-diagonal entry measures how redundant (linearly
+    dependent) learned features are — high values indicate collapse to a
+    low-diversity feature set.
+    """
 
     def __init__(self) -> None:
         self._scores: list[float] = []
@@ -88,15 +157,17 @@ class FeatureReuseDetector:
         input: tuple[torch.Tensor, ...],
         output: torch.Tensor,
     ) -> None:
-        out = _pool_to_embeddings(output.detach())
+        out = _pool_to_embeddings(output.detach())  # [B, D]
         if out.size(0) < 2:
             return
 
         centered = out - out.mean(dim=0, keepdim=True)
         norms = centered.norm(dim=0, keepdim=True).clamp(min=1e-8)
-        normalized = centered / norms
+        normalized = centered / norms  # [B, D], unit-norm columns
 
-        corr = torch.mm(normalized.T, normalized) / out.size(0)
+        # Gram matrix of cosine similarities between feature columns.
+        # Shape [D, D]; diagonal = 1.0 (self-similarity), zeroed out below.
+        corr = torch.mm(normalized.T, normalized)
         corr.fill_diagonal_(0.0)
         self._scores.append(corr.abs().mean().item())
 
@@ -108,7 +179,13 @@ class FeatureReuseDetector:
 
 
 class GradientDiversityTracker:
-    """Backward hook for mean variance of gradients across the batch."""
+    """
+    Backward hook measuring variance of output gradients across the batch.
+
+    Low variance indicates all samples produce near-identical gradient
+    signals — a sign that the network's training signal has become
+    monolithic and uninformative.
+    """
 
     def __init__(self) -> None:
         self._variances: list[float] = []
@@ -129,8 +206,7 @@ class GradientDiversityTracker:
         if g.dim() > 2:
             g = _flatten_batch(g)
 
-        grad_diversity = g.var(dim=0, unbiased=False).mean()
-        self._variances.append(grad_diversity.item())
+        self._variances.append(g.var(dim=0, unbiased=False).mean().item())
 
     def reset(self) -> None:
         self._variances.clear()
@@ -140,10 +216,35 @@ class GradientDiversityTracker:
 
 
 class NeuronSparsityTracker:
-    """Forward hook for fraction of near-zero activations."""
+    """
+    Forward hook measuring fraction of near-zero activations.
 
-    def __init__(self, threshold: float = 1e-3) -> None:
-        self.threshold = threshold
+    Uses an *adaptive* threshold: ``scale * relative_threshold``, where
+    ``scale`` is the per-batch mean absolute activation value.  This makes
+    the metric invariant to the layer's activation range — a fixed absolute
+    threshold (e.g. 1e-3) would report misleadingly high sparsity when
+    activations are naturally small-scale, or misleadingly low sparsity for
+    large-scale activations.
+
+    Parameters
+    ----------
+    relative_threshold : float
+        Fraction of the mean absolute activation below which a unit is
+        considered inactive.  Default 0.01 (1 % of mean scale).
+    threshold_mode : str
+        ``"adaptive"`` (default) uses relative_threshold × mean|act|.
+        ``"absolute"`` uses relative_threshold directly as a fixed cutoff.
+    """
+
+    def __init__(
+        self,
+        relative_threshold: float = 0.01,
+        threshold_mode: str = "adaptive",
+    ) -> None:
+        if threshold_mode not in ("adaptive", "absolute"):
+            raise ValueError(f"threshold_mode must be 'adaptive' or 'absolute', got {threshold_mode!r}")
+        self.relative_threshold = relative_threshold
+        self.threshold_mode = threshold_mode
         self._values: list[float] = []
 
     @torch.no_grad()
@@ -156,7 +257,14 @@ class NeuronSparsityTracker:
         out = output.detach()
         if out.numel() == 0:
             return
-        sparsity = (out.abs() < self.threshold).float().mean()
+
+        if self.threshold_mode == "adaptive":
+            scale = out.abs().mean()
+            threshold = (scale * self.relative_threshold).clamp(min=1e-9)
+        else:
+            threshold = self.relative_threshold
+
+        sparsity = (out.abs() < threshold).float().mean()
         self._values.append(sparsity.item())
 
     def reset(self) -> None:
@@ -166,8 +274,22 @@ class NeuronSparsityTracker:
         return sum(self._values) / len(self._values) if self._values else 0.0
 
 
-class EmbeddingVarianceTracker:
-    """Forward hook for variance of pooled embeddings across the batch."""
+class RepresentationalIsotropyTracker:
+    """
+    Forward hook measuring uniformity of per-dimension activation variance.
+
+    Isotropy is defined as:
+
+        isotropy = mean_dim_variance / max_dim_variance
+
+    A value of 1.0 means all dimensions contribute equally (isotropic,
+    maximally spread).  A value approaching 0 means variance is concentrated
+    in a small number of dimensions — a form of dimensional collapse distinct
+    from the scale changes captured by ActivationScaleTracker.
+
+    Replaces the previous EmbeddingVarianceTracker, which measured the same
+    underlying quantity as ActivationScaleTracker with a different aggregation.
+    """
 
     def __init__(self) -> None:
         self._values: list[float] = []
@@ -179,11 +301,16 @@ class EmbeddingVarianceTracker:
         input: tuple[torch.Tensor, ...],
         output: torch.Tensor,
     ) -> None:
-        emb = _pool_to_embeddings(output.detach())
-        if emb.numel() == 0:
+        emb = _pool_to_embeddings(output.detach())  # [B, D]
+        if emb.numel() == 0 or emb.size(0) < 2 or emb.size(1) < 2:
             return
-        variance = emb.var(dim=0, unbiased=False).mean()
-        self._values.append(variance.item())
+
+        per_dim_var = emb.var(dim=0, unbiased=False)  # [D]
+        max_var = per_dim_var.max()
+        if max_var < 1e-9:
+            return
+        isotropy = per_dim_var.mean() / max_var
+        self._values.append(isotropy.item())
 
     def reset(self) -> None:
         self._values.clear()
@@ -192,8 +319,15 @@ class EmbeddingVarianceTracker:
         return sum(self._values) / len(self._values) if self._values else 0.0
 
 
-class ActivationVarianceTracker:
-    """Forward hook for global activation variance."""
+class ActivationScaleTracker:
+    """
+    Forward hook for global RMS activation scale.
+
+    Tracks whether activation magnitudes are growing or vanishing — a
+    precursor to gradient explosion or saturation.  Renamed from
+    ActivationVarianceTracker to clarify its role as a scale monitor
+    (RMS is more interpretable than raw variance for this purpose).
+    """
 
     def __init__(self) -> None:
         self._values: list[float] = []
@@ -208,8 +342,8 @@ class ActivationVarianceTracker:
         out = output.detach()
         if out.numel() == 0:
             return
-        variance = out.var(unbiased=False)
-        self._values.append(variance.item())
+        rms = out.pow(2).mean().sqrt()
+        self._values.append(rms.item())
 
     def reset(self) -> None:
         self._values.clear()
@@ -218,9 +352,13 @@ class ActivationVarianceTracker:
         return sum(self._values) / len(self._values) if self._values else 0.0
 
 
+# ---------------------------------------------------------------------------
+# Signal logger
+# ---------------------------------------------------------------------------
+
 class SignalLogger:
     """
-    Register and manage signal hooks on specified model layers.
+    Register and manage all signal hooks on specified model layers.
 
     Parameters
     ----------
@@ -229,15 +367,6 @@ class SignalLogger:
     target_layers : list[str]
         Layer names from ``model.named_modules()``.
     """
-
-    _CANONICAL_SUFFIXES = (
-        "_representation_entropy",
-        "_feature_reuse",
-        "_gradient_diversity",
-        "_neuron_sparsity",
-        "_embedding_variance",
-        "_activation_variance",
-    )
 
     def __init__(self, model: nn.Module, target_layers: list[str]) -> None:
         self.model = model
@@ -248,8 +377,8 @@ class SignalLogger:
         self._reuse: dict[str, FeatureReuseDetector] = {}
         self._grad: dict[str, GradientDiversityTracker] = {}
         self._sparsity: dict[str, NeuronSparsityTracker] = {}
-        self._embed_var: dict[str, EmbeddingVarianceTracker] = {}
-        self._act_var: dict[str, ActivationVarianceTracker] = {}
+        self._isotropy: dict[str, RepresentationalIsotropyTracker] = {}
+        self._scale: dict[str, ActivationScaleTracker] = {}
 
         self._registered: set[str] = set()
         self._register_hooks()
@@ -267,15 +396,15 @@ class SignalLogger:
             r_hook = FeatureReuseDetector()
             g_hook = GradientDiversityTracker()
             s_hook = NeuronSparsityTracker()
-            v_hook = EmbeddingVarianceTracker()
-            a_hook = ActivationVarianceTracker()
+            i_hook = RepresentationalIsotropyTracker()
+            a_hook = ActivationScaleTracker()
 
             self._handles += [
                 module.register_forward_hook(e_hook),
                 module.register_forward_hook(r_hook),
                 module.register_full_backward_hook(g_hook),
                 module.register_forward_hook(s_hook),
-                module.register_forward_hook(v_hook),
+                module.register_forward_hook(i_hook),
                 module.register_forward_hook(a_hook),
             ]
 
@@ -283,8 +412,8 @@ class SignalLogger:
             self._reuse[name] = r_hook
             self._grad[name] = g_hook
             self._sparsity[name] = s_hook
-            self._embed_var[name] = v_hook
-            self._act_var[name] = a_hook
+            self._isotropy[name] = i_hook
+            self._scale[name] = a_hook
             self._registered.add(name)
 
     def reset(self) -> None:
@@ -294,56 +423,29 @@ class SignalLogger:
             self._reuse[name].reset()
             self._grad[name].reset()
             self._sparsity[name].reset()
-            self._embed_var[name].reset()
-            self._act_var[name].reset()
+            self._isotropy[name].reset()
+            self._scale[name].reset()
 
     def get_epoch_signals(self) -> dict[str, float]:
         """
         Return averaged epoch signals as a flat dict.
 
-        Canonical keys:
-        - ``{layer}_representation_entropy``
-        - ``{layer}_feature_reuse``
-        - ``{layer}_gradient_diversity``
-        - ``{layer}_neuron_sparsity``
-        - ``{layer}_embedding_variance``
-        - ``{layer}_activation_variance``
-
-        Backward-compatible aliases are also included:
-        - ``{layer}_entropy``
-        - ``{layer}_reuse``
-        - ``{layer}_grad_var``
-        - ``{layer}_grad_div``
-        - ``{layer}_sparsity``
-        - ``{layer}_embed_var``
-        - ``{layer}_act_var``
+        Keys (one set per tracked layer):
+        - ``{layer}_representation_entropy``   effective rank ∈ [1, min(B,D)]
+        - ``{layer}_feature_reuse``            mean off-diagonal Gram similarity
+        - ``{layer}_gradient_diversity``       mean per-dim gradient variance
+        - ``{layer}_neuron_sparsity``          fraction of near-zero activations
+        - ``{layer}_representational_isotropy``  mean/max per-dim variance ratio
+        - ``{layer}_activation_scale``         global RMS activation magnitude
         """
         signals: dict[str, float] = {}
         for name in self._registered:
-            entropy = self._entropy[name].get_metric()
-            reuse = self._reuse[name].get_metric()
-            grad_div = self._grad[name].get_metric()
-            sparsity = self._sparsity[name].get_metric()
-            embed_var = self._embed_var[name].get_metric()
-            act_var = self._act_var[name].get_metric()
-
-            # Canonical metric names
-            signals[f"{name}_representation_entropy"] = entropy
-            signals[f"{name}_feature_reuse"] = reuse
-            signals[f"{name}_gradient_diversity"] = grad_div
-            signals[f"{name}_neuron_sparsity"] = sparsity
-            signals[f"{name}_embedding_variance"] = embed_var
-            signals[f"{name}_activation_variance"] = act_var
-
-            # Backward-compatible aliases
-            signals[f"{name}_entropy"] = entropy
-            signals[f"{name}_reuse"] = reuse
-            signals[f"{name}_grad_var"] = grad_div
-            signals[f"{name}_grad_div"] = grad_div
-            signals[f"{name}_sparsity"] = sparsity
-            signals[f"{name}_embed_var"] = embed_var
-            signals[f"{name}_act_var"] = act_var
-
+            signals[f"{name}_representation_entropy"] = self._entropy[name].get_metric()
+            signals[f"{name}_feature_reuse"]          = self._reuse[name].get_metric()
+            signals[f"{name}_gradient_diversity"]     = self._grad[name].get_metric()
+            signals[f"{name}_neuron_sparsity"]        = self._sparsity[name].get_metric()
+            signals[f"{name}_representational_isotropy"] = self._isotropy[name].get_metric()
+            signals[f"{name}_activation_scale"]       = self._scale[name].get_metric()
         return signals
 
     def remove_hooks(self) -> None:
@@ -359,7 +461,7 @@ class SignalLogger:
             signals = {
                 k: v
                 for k, v in signals.items()
-                if any(k.endswith(suffix) for suffix in self._CANONICAL_SUFFIXES)
+                if any(k.endswith(suffix) for suffix in CANONICAL_METRIC_SUFFIXES)
             }
 
         if not signals:
@@ -367,5 +469,5 @@ class SignalLogger:
 
         lines = ["[SignalLogger] Epoch signals:"]
         for key, value in sorted(signals.items()):
-            lines.append(f"  {key:<40s} = {value:.6f}")
+            lines.append(f"  {key:<48s} = {value:.6f}")
         return "\n".join(lines)

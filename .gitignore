@@ -19,11 +19,18 @@ env/
 
 # Experiment artifacts
 output/
-metrics_log.csv
+metrics_log*.csv
 *.pt
 *.pth
 *.ckpt
 *.onnx
+*.pkl
+
+# Test output
+output_test.txt
+
+# Jupyter
+.ipynb_checkpoints/
 
 # Local datasets and downloads
 data/

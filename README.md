@@ -12,7 +12,7 @@ NDEWS is a research framework designed to identify "pre-symptomatic" indicators 
 *   **Predict the future.** Train lightweight forecasting models (Random Forest) to identify impending instability epochs.
 
 ###  Scientific Scope
-This project focuses on **training instability** and **representational degeneration**—the physical process where a model's internal representations lose diversity or scale. 
+This project focuses on **training instability** and **representational degeneration** - the physical process where a model's internal representations lose diversity or scale.
 *   **Includes:** Internal activation monitoring, early warning systems, gradient diversity analysis.
 *   **Excludes:** Recursive generated-data collapse (LLM-style "model collapse").
 
@@ -72,6 +72,22 @@ cat metrics_log.csv
 ### Step 5: Training the Lightweight Predictor
 **What happens:** A Random Forest classifier is trained on the sliding windows.
 **Why:** Fast and interpretable early-warning system that identifies impending failure.
+
+### Live Collapse Probability During Training
+Once a predictor is trained, the baseline runner can print a live probability score:
+
+```powershell
+# 1) Train and save predictor artifact
+python run_pipeline.py
+
+# 2) Run monitored training with online collapse probability
+python experiments\baseline__run.py --regime high_learning_rate --epochs 20 --predictor-path .\output\predictor\random_forest.pkl
+```
+
+Per epoch, you will see:
+- `Epoch x/y | ...% done`
+- `Collapse Probability = 0.xx`
+- The full internal metric block (entropy, gradient diversity, feature reuse, sparsity, variances, losses, and validation accuracy).
 
 ---
 
@@ -147,4 +163,4 @@ You should see all unit tests pass, validating that PyTorch hooks extract metric
 
 
 
-## 🚧 Status: Active Research Phase. Core telemetry is functional; predictive models are being refined.
+## Status: Active Research Phase. Core telemetry is functional; predictive models are being refined.

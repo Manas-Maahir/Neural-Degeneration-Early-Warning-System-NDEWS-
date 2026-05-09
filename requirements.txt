@@ -1,8 +1,23 @@
-torch
-torchvision
-torchaudio
-numpy
-matplotlib
-tqdm
-scikit-learn
-pandas
+# Core deep learning
+torch>=2.0,<3.0
+torchvision>=0.15,<1.0
+
+# Numerical / data
+numpy>=1.24,<3.0
+pandas>=2.0,<3.0
+
+# Machine learning
+scikit-learn>=1.3,<2.0
+
+# Visualisation
+matplotlib>=3.7,<4.0
+
+# Utilities
+tqdm>=4.65
+PyYAML>=6.0
+
+# -----------------------------------------------------------------------
+# Pin exact versions for strict reproduction (generated via `pip freeze`).
+# Use requirements-locked.txt once a stable environment is established:
+#   pip freeze > requirements-locked.txt
+# -----------------------------------------------------------------------

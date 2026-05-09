@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(Get-ChildItem -Path \"c:\\\\Users\\\\manas\\\\Desktop\\\\Projects\\\\Model Collapse Prediction Model\" -Recurse -Depth 2)",
+      "Bash(Select-Object FullName)"
+    ]
+  }
+}
