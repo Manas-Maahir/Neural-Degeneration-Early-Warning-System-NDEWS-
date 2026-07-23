@@ -204,10 +204,21 @@ Real coverage for the new public surface, all on a tiny `TestMLP` (no CIFAR down
 - The existing single-file Colab notebook build (`build_colab_notebook.py`) updated to
   the new module paths if retained.
 
-## Open Questions (defer to implementation)
+## Open Questions — resolved during implementation
 
-- Exact `suggest_layers` heuristic thresholds (which module types count as
-  "conv-like"/"linear").
-- Whether `activation_scale` drift should be two-sided (both vanishing and exploding)
-  rather than only ↑ — likely yes; confirm during implementation with a quick check
-  against recorded runs.
+- **`suggest_layers` heuristic — resolved.** Picks the *last* conv-like module
+  (`nn.Conv1d/2d/3d`) and the *last* `nn.Linear`, via `isinstance` in
+  [ndews/monitor.py](../../../ndews/monitor.py) (`suggest_layers`). Prints its choice; an
+  MLP yields just its last linear.
+- **`activation_scale` two-sided — resolved: yes, two-sided (`0`).** Confirmed empirically
+  against 25 recorded runs (baseline = each run's first 5 epochs; `*_activation_scale`
+  deviation in the collapse region vs that baseline). Collapse drives the signal mostly
+  **up/explosion** (`label_noise` ≈ +8.3z, `over_regularization` ≈ +3.6z, exploding
+  `delayed_collapse` layers) but genuinely **down/vanishing** in a meaningful minority —
+  most clearly within `delayed_collapse`, where one layer explodes while another vanishes
+  (≈4 up / 4 down across its runs). A one-sided ↑ rule would miss the vanishing layers, so
+  `COLLAPSE_DIRECTIONS["activation_scale"] = 0` (two-sided) stands in
+  [ndews/anomaly.py](../../../ndews/anomaly.py). Caveat: `high_learning_rate` reads as
+  "no drift" only because it collapses *inside* the 5-epoch baseline window (contaminated
+  baseline), not a counter-example. The `min_signals ≥ 2` + `z_threshold` gate guards
+  against a lone two-sided signal firing on benign fluctuation.
