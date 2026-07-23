@@ -71,6 +71,12 @@ class RegimeConfig:
         training catastrophe after a healthy warm-up period.
     lr_boost_factor : float
         Multiplier applied when ``lr_boost_at_epoch`` is reached.
+    augment : bool
+        Whether to apply train-time data augmentation.  Set ``False`` for
+        memorization/overfitting regimes (augmentation suppresses overfitting).
+    model : str | None
+        Architecture this regime pins (``"simple"`` or ``"deep"``).  ``None``
+        means the experiment runner chooses (its global ``--model`` default).
     """
     epochs: int
     lr: float
@@ -80,6 +86,8 @@ class RegimeConfig:
     train_fraction: float
     lr_boost_at_epoch: int | None = field(default=None)
     lr_boost_factor: float = field(default=10.0)
+    augment: bool = field(default=True)
+    model: str | None = field(default=None)
 
 
 # ---------------------------------------------------------------------------
@@ -178,6 +186,57 @@ REGIME_REGISTRY: dict[str, RegimeConfig] = {
         label_noise=0.0,
         class_imbalance=1.0,
         train_fraction=1.0,
+    ),
+
+    # ---- endogenous-collapse regimes (genuine forecasting study) ----
+    #
+    # These produce a GRADUAL representational/overfitting failure: the model
+    # warms up, validation accuracy peaks, then sustainedly degrades while the
+    # internal signals (effective rank, feature reuse, sparsity, ...) drift in
+    # the epochs BEFORE the crash.  Unlike delayed_collapse / high_learning_rate
+    # (exogenous shocks with no precursor), the lead-up is forecastable.  All
+    # disable augmentation and use a small train set so memorization is fast and
+    # reliable on a Colab GPU.
+    #
+    # memorization_collapse
+    # ---------------------
+    # SimpleCNN memorizes a tiny clean subset; val peaks early then degrades.
+    "memorization_collapse": RegimeConfig(
+        epochs=40,
+        lr=1e-3,
+        weight_decay=0.0,
+        label_noise=0.0,
+        class_imbalance=1.0,
+        train_fraction=0.05,
+        augment=False,
+    ),
+
+    # label_noise_collapse
+    # --------------------
+    # Model fits the clean labels first, then memorizes the noisy ones — a
+    # classic peak-then-degrade curve with an internal precursor.
+    "label_noise_collapse": RegimeConfig(
+        epochs=40,
+        lr=1e-3,
+        weight_decay=0.0,
+        label_noise=0.50,
+        class_imbalance=1.0,
+        train_fraction=0.10,
+        augment=False,
+    ),
+
+    # deep_memorization
+    # -----------------
+    # DeepCNN has more capacity → overfits a tiny set harder and earlier.
+    "deep_memorization": RegimeConfig(
+        epochs=40,
+        lr=1e-3,
+        weight_decay=0.0,
+        label_noise=0.0,
+        class_imbalance=1.0,
+        train_fraction=0.05,
+        augment=False,
+        model="deep",
     ),
 }
 

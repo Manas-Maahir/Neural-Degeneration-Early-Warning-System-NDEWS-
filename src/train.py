@@ -51,6 +51,12 @@ def train_epoch(
         optimizer.zero_grad(set_to_none=True)
         outputs = model(inputs)
         loss = criterion(outputs, labels)
+
+        if not torch.isfinite(loss):
+            print(f"[train_epoch] non-finite loss {loss.item():.4f} — skipping batch")
+            optimizer.zero_grad(set_to_none=True)
+            continue
+
         loss.backward()
         optimizer.step()
 

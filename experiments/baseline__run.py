@@ -90,6 +90,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--burn-in",         type=int,   default=10)
     parser.add_argument("--sustain-epochs",  type=int,   default=3)
     parser.add_argument(
+        "--chance-level", type=float, default=0.10,
+        help="Flag runs stuck at/below this accuracy as unstable (CIFAR-10 chance=0.10). "
+             "Set to a negative value to disable.",
+    )
+    parser.add_argument(
         "--predictor-path",
         type=str,
         default="./output/predictor/random_forest.pkl",
@@ -122,6 +127,9 @@ def main() -> None:
     class_imbalance = args.class_imbalance if args.class_imbalance is not None else regime_cfg.class_imbalance
     train_fraction  = args.train_fraction  if args.train_fraction  is not None else regime_cfg.train_fraction
 
+    # Negative disables the at-chance check; otherwise flag runs stuck at chance.
+    chance_level = args.chance_level if args.chance_level >= 0 else None
+
     if epochs < 1:
         raise ValueError(f"--epochs must be >= 1, got {epochs}")
 
@@ -144,7 +152,7 @@ def main() -> None:
     )
 
     model = build_model(args.model).to(device)
-    target_layers = resolve_target_layers(args.target_layers, args.model)
+    target_layers = resolve_target_layers(args.model, args.target_layers)
     logger = SignalLogger(model, target_layers=target_layers)
 
     optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=weight_decay)
@@ -225,6 +233,7 @@ def main() -> None:
                 window=args.drop_window,
                 burn_in=args.burn_in,
                 sustain_epochs=args.sustain_epochs,
+                chance_level=chance_level,
             )
             peak_acc = max(val_history)
 
@@ -279,6 +288,7 @@ def main() -> None:
         window=args.drop_window,
         burn_in=args.burn_in,
         sustain_epochs=args.sustain_epochs,
+        chance_level=chance_level,
     )
     print("Run complete.")
     print(
