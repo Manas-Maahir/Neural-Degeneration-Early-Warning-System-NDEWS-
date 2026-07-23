@@ -10,10 +10,11 @@ catastrophic degradation *before* it appears in validation metrics.
 
 ## Objective
 
-- **Don't wait for the crash.** Detect representational decay as it builds.
-- **Monitor internal health.** Use PyTorch hooks to extract 6 theoretically-grounded signal metrics.
-- **Predict the future.** Train a Random Forest forecaster on sliding windows of those signals and
-  emit per-epoch collapse probabilities during live training.
+- **Drop-in, model-agnostic.** `CollapseMonitor` attaches to any `torch.nn.Module` in three lines.
+- **Works on day one.** Self-baselined anomaly detection over 6 internal signals — no pretraining
+  and no user-collected data required.
+- **Optional supervised layer.** A Random Forest forecaster and a val-accuracy labeller layer on
+  top when you have historical runs to learn from.
 
 ### Scientific scope
 
@@ -41,6 +42,39 @@ validation accuracy drops, giving the predictor time to raise an alert.
 
 ---
 
+## Library quickstart (`CollapseMonitor`)
+
+Install the package, then wrap any PyTorch training loop:
+
+```powershell
+pip install -e .
+```
+
+```python
+from ndews import CollapseMonitor
+
+monitor = CollapseMonitor(model, layers=["layer3", "fc"])  # layers=None -> auto-pick
+for epoch in range(epochs):
+    train_one_epoch(...)                     # model.train() -> hooks record
+    acc = validate(...)                      # model.eval()  -> hooks skip (train-only)
+    report = monitor.on_epoch_end(val_acc=acc)
+    if report.alert:
+        print(report.status, report.drifting_signals, report.probability)
+monitor.close()                              # or `with CollapseMonitor(...) as monitor:`
+```
+
+`report.status` moves `warming_up → ok → warning → collapse`. Alerts come from
+self-baselined anomaly detection — per-signal **directional** z-scores against the run's
+own rolling baseline — so nothing needs to be pretrained. Passing `predictor=<path>` adds
+an optional supervised `probability`; supplying `val_acc` enables labeller confirmation
+(the `collapse` status). Run the self-contained demo (no dataset download):
+
+```powershell
+python examples\quickstart.py
+```
+
+---
+
 ## Setup
 
 ```powershell
@@ -49,7 +83,7 @@ python -m venv instability_env
 pip install -r requirements.txt
 ```
 
-Or install as an editable package (enables `import src` from anywhere):
+Or install as an editable package (enables `import ndews` from anywhere):
 
 ```powershell
 pip install -e .
@@ -57,21 +91,24 @@ pip install -e .
 
 ---
 
-## Quick Start
+## Research harness (CIFAR examples)
 
-### 1. Validate the hook infrastructure
+The `examples/` directory is the original CIFAR-10 study, now a consumer of the `ndews`
+library. It validates the signals on real training dynamics.
+
+### 1. Validate the library
 
 ```powershell
-python test_signals.py
+python -m pytest
 ```
 
-All 7 tests must pass before running experiments. This checks effective rank bounds, isotropy
-range, canonical key names, and labeller correctness.
+The suite covers the monitor, anomaly engine, hook train-only guard, sliding-window
+labelling, effective-rank/isotropy bounds, canonical key names, and labeller correctness.
 
 ### 2. End-to-end smoke test (2 runs, 10 epochs)
 
 ```powershell
-python run_pipeline.py
+python examples\run_pipeline.py
 ```
 
 Runs one healthy and one noisy training regime, saves `output/metrics_log.csv`, trains a
@@ -81,10 +118,10 @@ predictor, and prints in-sample evaluation. Completes in a few minutes on CPU.
 
 ```powershell
 # Train and save predictor artifact first:
-python run_pipeline.py
+python examples\run_pipeline.py
 
 # Run a monitored experiment with per-epoch collapse probability:
-python experiments\baseline__run.py `
+python examples\baseline_run.py `
     --regime high_learning_rate --epochs 20 `
     --predictor-path .\output\predictor\random_forest.pkl
 ```
@@ -112,7 +149,7 @@ For held-out evaluation, use leave-one-run-out cross-validation (LORO-CV):
 
 ```powershell
 # Step 1: Generate batch data (5 seeds × 9 regimes × 30 epochs, ~45 runs)
-python experiments\run_many_regimes.py --runs-per-regime 5 --epochs 30
+python examples\run_many_regimes.py --runs-per-regime 5 --epochs 30
 
 # Step 2: Run LORO-CV evaluation (RF predictor vs. three baselines)
 python scripts\evaluate_predictor.py `
@@ -134,7 +171,7 @@ The predictor has research value only if it beats `ValAccDropBaseline` on F1 and
 
 ## Experiment Regimes
 
-Defined in [`src/regimes.py`](src/regimes.py):
+Defined in [`examples/regimes.py`](examples/regimes.py):
 
 | Regime | Perturbation |
 | :----- | :----------- |
@@ -151,7 +188,7 @@ Defined in [`src/regimes.py`](src/regimes.py):
 Run a single regime:
 
 ```powershell
-python experiments\baseline__run.py --regime delayed_collapse --epochs 30
+python examples\baseline_run.py --regime delayed_collapse --epochs 30
 ```
 
 ---
@@ -203,30 +240,34 @@ output/
 ## Repository Structure
 
 ```
-src/
-  signals.py       # Hook-based signal logger — 6 canonical metrics + CANONICAL_METRIC_SUFFIXES
-  labeller.py      # Instability detection via _scan_instability() (shared core)
-  predictor.py     # Sliding windows, RandomForest wrapper, schema versioning
-  evaluation.py    # LORO-CV, RunData dataclass, baseline comparisons
-  regimes.py       # Single-source registry for all 9 experiment regimes
-  dataset.py       # CIFAR-10 loaders with train augmentation + perturbation controls
+ndews/              # the installable library (import ndews) — zero CIFAR assumptions
+  monitor.py       # CollapseMonitor + MonitorReport + suggest_layers  (public API)
+  anomaly.py       # RollingBaseline + directional z-score alert engine (no pretraining)
+  signals.py       # Hook-based signal logger — 6 metrics + train_only guard
+  labeller.py      # Instability detection via _scan_instability() (optional)
+  predictor.py     # Sliding windows, RandomForest wrapper, schema versioning (optional)
+  evaluation.py    # LORO-CV, RunData dataclass, baseline comparisons (research)
+  seed_utils.py    # seed_everything() — deterministic across random/numpy/torch/cuda
+  py.typed         # ships type hints
+
+examples/           # the CIFAR-10 research harness — now consumes the ndews library
+  quickstart.py    # minimal drop-in CollapseMonitor demo (synthetic data, no download)
+  regimes.py       # single-source registry for all 9 experiment regimes
+  dataset.py       # CIFAR-10 loaders with augmentation + perturbation controls
   model.py         # SimpleCNN, DeepCNN, TestMLP (all accept num_classes)
   train.py         # train_epoch / eval_epoch — NaN-guarded loss
-  seed_utils.py    # seed_everything() — deterministic across random/numpy/torch/cuda
+  run_pipeline.py  # end-to-end smoke test (2 runs, 10 epochs, in-sample evaluation)
+  baseline_run.py  # single-regime monitored run with live collapse probability
+  run_many_regimes.py   # batch runner across all regimes and seeds
 
 analysis/
-  signal_lag.py    # Temporal precedence analysis; CLI via python -m analysis.signal_lag
-  plots.py         # Matplotlib figures for CV metrics, signal trajectories, lead times
-
-experiments/
-  baseline__run.py      # Single-regime monitored run with live collapse probability
-  run_many_regimes.py   # Batch runner across all regimes and seeds
+  signal_lag.py    # temporal precedence analysis; CLI via python -m analysis.signal_lag
+  plots.py         # matplotlib figures for CV metrics, signal trajectories, lead times
 
 scripts/
-  evaluate_predictor.py # Load session CSVs → LORO-CV → baseline comparison table
+  evaluate_predictor.py # load session CSVs → LORO-CV → baseline comparison table
 
-run_pipeline.py    # End-to-end smoke test (2 runs, 10 epochs, in-sample evaluation)
-test_signals.py    # 7-test smoke suite validating hooks, effective rank, and labeller
+tests/              # pytest suite for the ndews public surface (no CIFAR download)
 ```
 
 ---

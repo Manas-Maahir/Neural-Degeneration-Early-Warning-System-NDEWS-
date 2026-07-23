@@ -4,7 +4,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Neural Degeneration Early Warning System (NDEWS) — a research framework for predicting training instability and representational collapse in neural networks. It extracts 6 internal signals (entropy, feature reuse, gradient diversity, sparsity, embedding variance, activation variance) from model layers via PyTorch hooks, trains a Random Forest predictor on sliding windows of those signals, and forecasts instability before validation loss crashes.
+Neural Degeneration Early Warning System (NDEWS) — a model-agnostic library for predicting training instability and representational collapse in neural networks. It extracts 6 internal signals (entropy, feature reuse, gradient diversity, sparsity, embedding variance, activation variance) from model layers via PyTorch hooks, then raises alerts via self-baselined anomaly detection (per-signal directional z-scores vs the run's own rolling baseline) — no pretraining required. An optional Random Forest predictor and a val-accuracy labeller layer on top when historical runs are available.
+
+**Package layout:** `ndews/` is the installable library (`import ndews`) with `CollapseMonitor` as the public entry point and zero CIFAR assumptions; `examples/` is the CIFAR-10 research harness that *consumes* the library (dataset, models, regimes, runners); `tests/` is the pytest suite; `analysis/` holds lead-time analysis and plotting.
+
+**Primary interface — [ndews/monitor.py](ndews/monitor.py):** `CollapseMonitor(model, layers=None, baseline_epochs=5, z_threshold=2.5, min_signals=2, predictor=None)`. Call `on_epoch_end(val_acc=...)` each epoch for a `MonitorReport` (`status` ∈ warming_up/ok/warning/collapse, `drifting_signals`, `probability`, `collapse_flag`). `suggest_layers(model)` auto-picks the last conv-like + last linear module. Use `close()` or the context manager to detach hooks.
 
 ## Setup & Commands
 
@@ -16,7 +20,8 @@ pip install -r requirements.txt
 
 | Task | Command |
 |------|---------|
-| Validate hook infrastructure | `python test_signals.py` |
+| Run the test suite | `python -m pytest` |
+| Try the drop-in monitor demo | `python examples\quickstart.py` |
 | Full pipeline (generate data → train predictor) | `python examples\run_pipeline.py` |
 | Single experiment | `python examples\baseline_run.py --regime normal --epochs 20` |
 | Single experiment with live collapse prediction | `python examples\baseline_run.py --regime high_learning_rate --epochs 20 --predictor-path .\output\predictor\random_forest.pkl` |
@@ -37,7 +42,7 @@ pip install -r requirements.txt
 
 ### Key Modules
 
-**[ndews/signals.py](ndews/signals.py)** — Core instrumentation. `SignalLogger` registers all 6 hooks on named layers (e.g., `["conv2", "fc1"]`). Call `reset()` at epoch start, `get_epoch_signals()` at epoch end for a flat dict of averaged metrics. All hooks use `register_forward_hook` / `register_full_backward_hook` — the model is never modified.
+**[ndews/signals.py](ndews/signals.py)** — Core instrumentation. `SignalLogger` registers all 6 hooks on named layers (e.g., `["conv2", "fc1"]`). Call `reset()` at epoch start, `get_epoch_signals()` at epoch end for a flat dict of averaged metrics. All hooks use `register_forward_hook` / `register_full_backward_hook` — the model is never modified. `train_only=True` (default) makes every hook early-return when `not module.training`, so validation forward passes don't pollute the epoch's buffers.
 
 Six hook types (all canonical names exported as `CANONICAL_METRIC_SUFFIXES`):
 - `RepresentationEntropyHook` — Effective rank (Roy & Vetterli 2007): `exp(H(σ/Σσ))`, range `[1, min(B,D)]`; drop signals representational collapse
@@ -46,6 +51,8 @@ Six hook types (all canonical names exported as `CANONICAL_METRIC_SUFFIXES`):
 - `NeuronSparsityTracker` — Fraction near-zero activations (adaptive threshold: 1% of mean abs activation)
 - `RepresentationalIsotropyTracker` — `mean_dim_var / max_dim_var`; close to 0 = dimensional collapse
 - `ActivationScaleTracker` — RMS activation magnitude; tracks explosion/vanishing
+
+**[ndews/anomaly.py](ndews/anomaly.py)** — Self-baselined alert engine. `RollingBaseline` freezes per-signal mean/std over the first `baseline_epochs`. `directional_zscore()` scores each signal so positive = collapse-ward, via `COLLAPSE_DIRECTIONS` (rank/isotropy/gradient-diversity down = bad; feature-reuse/sparsity up = bad; activation-scale two-sided). Non-finite signals count as max-severity drift. `AnomalyEngine.score()` returns drifting signals + an alert when `>= min_signals` cross `z_threshold`. Pure NumPy, no training.
 
 **[ndews/predictor.py](ndews/predictor.py)** — `Predictor` class wraps `RandomForestClassifier`. `create_sliding_windows()` converts epoch-wise metric dicts into supervised (X, y) arrays. `canonical_aggregate_features()` averages per-metric-type across all layers into a 6-element feature vector for online inference. Schema version tracked in pickle payload.
 
