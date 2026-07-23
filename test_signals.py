@@ -99,13 +99,13 @@ def test_mlp_hooks() -> None:
     eff_rank = signals["fc1_representation_entropy"]
     if not (1.0 <= eff_rank <= 16.0):
         _fail(f"fc1 effective rank {eff_rank:.3f} outside expected [1, 16]")
-    _ok(f"fc1 effective rank = {eff_rank:.3f}  (in [1, 16] ✓)")
+    _ok(f"fc1 effective rank = {eff_rank:.3f}  (in [1, 16] OK)")
 
     # Isotropy must be in [0, 1].
     isotropy = signals["fc1_representational_isotropy"]
     if not (0.0 <= isotropy <= 1.0):
         _fail(f"fc1 isotropy {isotropy:.4f} outside [0, 1]")
-    _ok(f"fc1 isotropy = {isotropy:.4f}  (in [0, 1] ✓)")
+    _ok(f"fc1 isotropy = {isotropy:.4f}  (in [0, 1] OK)")
 
     logger.remove_hooks()
     _ok("Hooks removed cleanly")
@@ -207,11 +207,11 @@ def test_num_classes() -> None:
 
     if out10.shape != (4, 10):
         _fail(f"SimpleCNN(num_classes=10) output shape {out10.shape} != (4, 10)")
-    _ok(f"SimpleCNN(num_classes=10)  → output shape {tuple(out10.shape)} ✓")
+    _ok(f"SimpleCNN(num_classes=10)  -> output shape {tuple(out10.shape)} OK")
 
     if out100.shape != (4, 100):
         _fail(f"SimpleCNN(num_classes=100) output shape {out100.shape} != (4, 100)")
-    _ok(f"SimpleCNN(num_classes=100) → output shape {tuple(out100.shape)} ✓")
+    _ok(f"SimpleCNN(num_classes=100) -> output shape {tuple(out100.shape)} OK")
 
 
 # ---------------------------------------------------------------------------
@@ -229,7 +229,7 @@ def test_labeller() -> None:
     result = label_run(crashing)
     assert result["unstable"] is True, "Expected unstable=True"
     assert result["instability_epoch"] is not None
-    _ok(f"Crashing run  → unstable=True, detected at epoch {result['instability_epoch']}")
+    _ok(f"Crashing run  -> unstable=True, detected at epoch {result['instability_epoch']}")
 
     # Case 2: Healthy plateau
     healthy = [0.10, 0.20, 0.30, 0.40, 0.50,
@@ -239,7 +239,7 @@ def test_labeller() -> None:
     result = label_run(healthy)
     assert result["unstable"] is False, "Expected unstable=False"
     assert result["instability_epoch"] is None
-    _ok("Healthy run   → unstable=False, instability_epoch=None")
+    _ok("Healthy run   -> unstable=False, instability_epoch=None")
 
     # Case 3: Slow drift across > window epochs — should NOT trigger
     slow_drift = [0.10, 0.20, 0.30, 0.40, 0.50,
@@ -247,11 +247,11 @@ def test_labeller() -> None:
                   0.82, 0.81, 0.80, 0.79, 0.76,
                   0.74]
     result = label_run(slow_drift)
-    _ok(f"Slow-drift run → unstable={result['unstable']} (should be False if drop spread > window)")
+    _ok(f"Slow-drift run -> unstable={result['unstable']} (should be False if drop spread > window)")
 
     # Case 4: Too short — no check possible
     assert is_unstable([0.1, 0.2, 0.3]) is False
-    _ok("Short history  → False (burn-in not reached)")
+    _ok("Short history  -> False (burn-in not reached)")
 
     # Case 5: get_instability_epoch on healthy run returns None
     assert get_instability_epoch(healthy) is None

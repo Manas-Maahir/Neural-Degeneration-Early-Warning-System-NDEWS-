@@ -47,3 +47,6 @@ Thumbs.db
 
 # Logs
 *.log
+
+# Claude Code harness runtime
+.claude/scheduled_tasks.lock
