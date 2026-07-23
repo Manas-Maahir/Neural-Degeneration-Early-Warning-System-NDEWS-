@@ -1,33 +1,37 @@
 """
-experiments/baseline__run.py
-============================
+examples/baseline_run.py
+========================
 CLI runner for CIFAR-10 instability experiments with live metric logging.
 
-Requires the package to be installed (from the project root):
-    pip install -e .
+Run from the project root (works with or without `pip install -e .`):
 
 Example usage:
-    python experiments/baseline__run.py --regime normal --epochs 20
-    python experiments/baseline__run.py --regime delayed_collapse --epochs 30
-    python experiments/baseline__run.py --regime high_learning_rate --epochs 20 \\
+    python examples/baseline_run.py --regime normal --epochs 20
+    python examples/baseline_run.py --regime delayed_collapse --epochs 30
+    python examples/baseline_run.py --regime high_learning_rate --epochs 20 \\
         --predictor-path ./output/predictor/random_forest.pkl
 """
 
 from __future__ import annotations
 
 import argparse
+import sys
 from pathlib import Path
+
+# Make the repo root importable so `ndews` and the `examples` package resolve
+# whether or not the package was installed (`pip install -e .`).
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import torch
 import torch.nn as nn
 
-from src.dataset import get_cifar_loaders
-from src.labeller import label_run
-from src.predictor import Predictor, canonical_aggregate_features
-from src.regimes import ALL_REGIMES, get_regime_config, build_model, resolve_target_layers
-from src.seed_utils import seed_everything
-from src.signals import SignalLogger
-from src.train import eval_epoch, train_epoch
+from ndews.labeller import label_run
+from ndews.predictor import Predictor, canonical_aggregate_features
+from ndews.seed_utils import seed_everything
+from ndews.signals import SignalLogger
+from examples.dataset import get_cifar_loaders
+from examples.regimes import ALL_REGIMES, get_regime_config, build_model, resolve_target_layers
+from examples.train import eval_epoch, train_epoch
 
 
 # ---------------------------------------------------------------------------
@@ -65,7 +69,7 @@ def build_parser() -> argparse.ArgumentParser:
         type=str,
         default="normal",
         choices=ALL_REGIMES,
-        help="Training regime to use. See src/regimes.py for definitions.",
+        help="Training regime to use. See examples/regimes.py for definitions.",
     )
     parser.add_argument(
         "--model", type=str, default="simple", choices=["simple", "deep"],

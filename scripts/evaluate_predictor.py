@@ -22,7 +22,7 @@ Usage
 Input
 -----
 Reads all CSV files from ``<session-dir>/runs/*.csv``.
-Each CSV must be a per-epoch log produced by ``experiments/run_many_regimes.py``
+Each CSV must be a per-epoch log produced by ``examples/run_many_regimes.py``
 with columns: run_id, epoch, val_acc, instability_epoch, and signal columns
 ending in CANONICAL_METRIC_SUFFIXES.
 
@@ -44,13 +44,13 @@ from pathlib import Path
 # Allow running as `python scripts/evaluate_predictor.py` without installing.
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from src.evaluation import (
+from ndews.evaluation import (
     RunData,
     evaluate_baselines,
     leave_one_run_out_cv,
     print_comparison_table,
 )
-from src.signals import CANONICAL_METRIC_SUFFIXES
+from ndews.signals import CANONICAL_METRIC_SUFFIXES
 
 
 # ---------------------------------------------------------------------------
@@ -264,7 +264,7 @@ def main() -> None:
             print(f"[Plot] CV metrics → {path_cv}")
 
             # Feature importance requires training a full predictor on all data.
-            from src.predictor import Predictor, canonical_aggregate_features, create_sliding_windows
+            from ndews.predictor import Predictor, canonical_aggregate_features, create_sliding_windows
             from analysis.plots import plot_feature_importance
 
             agg_seqs = [

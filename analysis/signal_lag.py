@@ -41,7 +41,7 @@ from typing import Any
 
 import numpy as np
 
-# Signal metric suffixes from src/signals.py (duplicated here to avoid
+# Signal metric suffixes from ndews/signals.py (duplicated here to avoid
 # importing torch when this module is used as a pure analysis script).
 _CANONICAL_SUFFIXES = (
     "_representation_entropy",

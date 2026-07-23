@@ -1,6 +1,6 @@
 """
-src/dataset.py
-==============
+examples/dataset.py
+===================
 CIFAR-10 data loading utilities with optional stress-regime controls.
 
 Supported train-set perturbations:

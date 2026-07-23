@@ -1,6 +1,6 @@
 """
-src/regimes.py
-==============
+examples/regimes.py
+===================
 Experiment regime definitions and model construction utilities.
 
 This module is the single source of truth for:
@@ -39,7 +39,7 @@ from dataclasses import dataclass, field
 
 import torch.nn as nn
 
-from src.model import DeepCNN, SimpleCNN
+from examples.model import DeepCNN, SimpleCNN
 
 
 # ---------------------------------------------------------------------------

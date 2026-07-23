@@ -248,7 +248,7 @@ def plot_cv_metrics(
     Parameters
     ----------
     cv_result : dict
-        Return value of ``src.evaluation.leave_one_run_out_cv``.
+        Return value of ``ndews.evaluation.leave_one_run_out_cv``.
     metrics : sequence of str
         Which metric columns to plot.
     """
@@ -312,7 +312,7 @@ def plot_feature_importance(
     Parameters
     ----------
     predictor : Predictor
-        A trained ``src.predictor.Predictor`` instance.
+        A trained ``ndews.predictor.Predictor`` instance.
     top_n : int
         Show only the top N most important features.
     """
@@ -382,7 +382,7 @@ def plot_horizon_sweep(
     Parameters
     ----------
     sweep_result : dict
-        Return value of ``src.evaluation.forecast_horizon_sweep``.
+        Return value of ``ndews.evaluation.forecast_horizon_sweep``.
     metric : str
         Base metric name, e.g. ``"roc_auc"``, ``"f1"``, ``"recall"`` — the
         ``"{metric}_mean"``/``"{metric}_std"`` keys are read from each aggregate.

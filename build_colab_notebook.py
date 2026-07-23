@@ -4,11 +4,11 @@ build_colab_notebook.py
 Assembles the multi-module NDEWS project into a single Colab-ready notebook
 (`Model_Collapse_Prediction.ipynb`).
 
-It reads each library module from `src/` and `analysis/`, strips intra-project
-imports (`from src...`, `from analysis...`), `from __future__` lines, and any
-`if __name__ == "__main__"` CLI blocks, then emits each as its own code cell.
-The CLI scripts (run_pipeline, run_many_regimes, baseline__run,
-evaluate_predictor) are NOT pasted verbatim — they are re-expressed as
+It reads each library module from `ndews/`, `examples/`, and `analysis/`, strips
+intra-project imports (`from ndews...`, `from examples...`, `from analysis...`),
+`from __future__` lines, and any `if __name__ == "__main__"` CLI blocks, then emits
+each as its own code cell. The CLI scripts (run_pipeline, run_many_regimes,
+baseline_run, evaluate_predictor) are NOT pasted verbatim — they are re-expressed as
 notebook-native runner cells defined at the bottom of this file.
 """
 
@@ -22,24 +22,27 @@ OUT = ROOT / "Model_Collapse_Prediction.ipynb"
 
 # Modules inlined in dependency order.
 MODULE_FILES = [
-    "src/seed_utils.py",
-    "src/model.py",
-    "src/regimes.py",
-    "src/dataset.py",
-    "src/train.py",
-    "src/signals.py",
-    "src/predictor.py",
-    "src/labeller.py",
-    "src/evaluation.py",
+    "ndews/seed_utils.py",
+    "examples/model.py",
+    "examples/regimes.py",
+    "examples/dataset.py",
+    "examples/train.py",
+    "ndews/signals.py",
+    "ndews/predictor.py",
+    "ndews/labeller.py",
+    "ndews/evaluation.py",
     "analysis/signal_lag.py",
     "analysis/plots.py",
 ]
 
 _DROP_PREFIXES = (
     "from __future__ import",
-    "from src.",
-    "from src ",
-    "import src",
+    "from ndews.",
+    "from ndews ",
+    "import ndews",
+    "from examples.",
+    "from examples ",
+    "import examples",
     "from analysis.",
     "import analysis",
 )
@@ -96,7 +99,7 @@ cells.append(md(
     "collapse in CNNs by extracting 6 internal signals via PyTorch hooks, then training a\n"
     "Random-Forest forecaster on sliding windows of those signals.\n"
     "\n"
-    "This notebook bundles the entire `src/` + `analysis/` codebase into one file.\n"
+    "This notebook bundles the entire `ndews/` + `examples/` + `analysis/` codebase into one file.\n"
     "\n"
     "**How to run:** `Runtime -> Run all`. For a GPU: `Runtime -> Change runtime type -> GPU`.\n"
     "\n"
@@ -122,15 +125,15 @@ cells.append(md(
 ))
 
 _TITLES = {
-    "src/seed_utils.py": "### 1.1 `seed_utils` — deterministic seeding",
-    "src/model.py": "### 1.2 `model` — SimpleCNN / DeepCNN / TestMLP",
-    "src/regimes.py": "### 1.3 `regimes` — experiment configs + model builder",
-    "src/dataset.py": "### 1.4 `dataset` — CIFAR-10 loaders with stress controls",
-    "src/train.py": "### 1.5 `train` — train/eval epoch loops",
-    "src/signals.py": "### 1.6 `signals` — the 6 hook signals + SignalLogger",
-    "src/predictor.py": "### 1.7 `predictor` — sliding windows + RandomForest predictor",
-    "src/labeller.py": "### 1.8 `labeller` — instability detection from val-accuracy",
-    "src/evaluation.py": "### 1.9 `evaluation` — LORO-CV + heuristic baselines",
+    "ndews/seed_utils.py": "### 1.1 `seed_utils` — deterministic seeding",
+    "examples/model.py": "### 1.2 `model` — SimpleCNN / DeepCNN / TestMLP",
+    "examples/regimes.py": "### 1.3 `regimes` — experiment configs + model builder",
+    "examples/dataset.py": "### 1.4 `dataset` — CIFAR-10 loaders with stress controls",
+    "examples/train.py": "### 1.5 `train` — train/eval epoch loops",
+    "ndews/signals.py": "### 1.6 `signals` — the 6 hook signals + SignalLogger",
+    "ndews/predictor.py": "### 1.7 `predictor` — sliding windows + RandomForest predictor",
+    "ndews/labeller.py": "### 1.8 `labeller` — instability detection from val-accuracy",
+    "ndews/evaluation.py": "### 1.9 `evaluation` — LORO-CV + heuristic baselines",
     "analysis/signal_lag.py": "### 1.10 `signal_lag` — signal lead-time analysis",
     "analysis/plots.py": "### 1.11 `plots` — visualisation helpers",
 }

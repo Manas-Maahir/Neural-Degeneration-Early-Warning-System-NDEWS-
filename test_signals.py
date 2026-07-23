@@ -1,7 +1,7 @@
 """
 test_signals.py
 ===============
-Smoke tests for src/signals.py, src/labeller.py, and src/model.py.
+Smoke tests for ndews/signals.py, ndews/labeller.py, and examples/model.py.
 
 Run from the project root:
     python test_signals.py
@@ -19,9 +19,9 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 
 import torch
-from src.labeller import get_instability_epoch, is_unstable, label_run
-from src.model import DeepCNN, SimpleCNN, TestMLP
-from src.signals import CANONICAL_METRIC_SUFFIXES, SignalLogger
+from ndews.labeller import get_instability_epoch, is_unstable, label_run
+from examples.model import DeepCNN, SimpleCNN, TestMLP
+from ndews.signals import CANONICAL_METRIC_SUFFIXES, SignalLogger
 
 
 # ---------------------------------------------------------------------------
@@ -47,7 +47,7 @@ def _fmt_signals(signals: dict[str, float]) -> str:
     return "  " + "\n  ".join(f"{k:<48s} = {v:.6f}" for k, v in sorted(signals.items()))
 
 
-# Expected canonical suffixes (must stay in sync with src/signals.py).
+# Expected canonical suffixes (must stay in sync with ndews/signals.py).
 _EXPECTED_SUFFIXES = (
     "_representation_entropy",
     "_feature_reuse",

@@ -1,6 +1,6 @@
 """
-src/signals.py
-==============
+ndews/signals.py
+================
 PyTorch hook infrastructure for extracting internal model signals during
 training. Metrics are recorded per forward/backward pass and averaged
 at epoch end by ``SignalLogger``.

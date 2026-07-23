@@ -1,6 +1,6 @@
 """
-src/labeller.py
-===============
+ndews/labeller.py
+=================
 Objective instability detection for training runs.
 
 Detection criterion:

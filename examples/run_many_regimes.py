@@ -1,16 +1,15 @@
 """
-experiments/run_many_regimes.py
-===============================
+examples/run_many_regimes.py
+============================
 Batch runner for instability experiments across multiple regimes and seeds.
 
 Stores per-run CSV logs, a run-level summary CSV, and a manifest JSON.
 
-Requires the package to be installed (from the project root):
-    pip install -e .
+Run from the project root (works with or without `pip install -e .`):
 
 Example:
-    python experiments/run_many_regimes.py --runs-per-regime 5 --epochs 20
-    python experiments/run_many_regimes.py --regimes delayed_collapse,normal --runs-per-regime 5
+    python examples/run_many_regimes.py --runs-per-regime 5 --epochs 20
+    python examples/run_many_regimes.py --regimes delayed_collapse,normal --runs-per-regime 5
 """
 
 from __future__ import annotations
@@ -18,19 +17,24 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import sys
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+# Make the repo root importable so `ndews` and the `examples` package resolve
+# whether or not the package was installed (`pip install -e .`).
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
 import torch
 import torch.nn as nn
 
-from src.dataset import get_cifar_loaders
-from src.labeller import label_run
-from src.regimes import ALL_REGIMES, get_regime_config, build_model, resolve_target_layers
-from src.seed_utils import seed_everything
-from src.signals import CANONICAL_METRIC_SUFFIXES, SignalLogger
-from src.train import eval_epoch, train_epoch
+from ndews.labeller import label_run
+from ndews.seed_utils import seed_everything
+from ndews.signals import CANONICAL_METRIC_SUFFIXES, SignalLogger
+from examples.dataset import get_cifar_loaders
+from examples.regimes import ALL_REGIMES, get_regime_config, build_model, resolve_target_layers
+from examples.train import eval_epoch, train_epoch
 
 
 # ---------------------------------------------------------------------------

@@ -1,6 +1,6 @@
 """
-src/evaluation.py
-=================
+ndews/evaluation.py
+===================
 Leave-one-run-out cross-validation (LORO-CV) and baseline comparisons
 for the instability predictor.
 
@@ -14,7 +14,7 @@ Design
 
 Typical usage
 -------------
-    from src.evaluation import RunData, leave_one_run_out_cv, evaluate_baselines
+    from ndews.evaluation import RunData, leave_one_run_out_cv, evaluate_baselines
 
     runs = [RunData(run_id, metrics_seq, val_accs, instability_epoch), ...]
     cv_result = leave_one_run_out_cv(runs, window_size=3, forecast_horizon=2)
@@ -38,7 +38,7 @@ from sklearn.metrics import (
     roc_auc_score,
 )
 
-from src.predictor import (
+from ndews.predictor import (
     Predictor,
     canonical_aggregate_features,
     create_sliding_windows,

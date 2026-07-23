@@ -1,6 +1,6 @@
 """
-src/predictor.py
-================
+ndews/predictor.py
+==================
 Sliding-window feature utilities and lightweight instability predictor.
 
 This module is used in two places:
@@ -12,7 +12,7 @@ This module is used in two places:
 Signal name alignment
 ---------------------
 The canonical metric names used here match the key suffixes produced by
-``SignalLogger.get_epoch_signals()`` in src/signals.py.  If you rename a
+``SignalLogger.get_epoch_signals()`` in ndews/signals.py.  If you rename a
 hook or add a new one, update ``CANONICAL_METRIC_NAMES`` and
 ``_SUFFIX_TO_CANONICAL`` here accordingly.
 """

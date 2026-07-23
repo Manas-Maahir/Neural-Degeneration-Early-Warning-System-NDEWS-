@@ -1,6 +1,6 @@
 """
-src/train.py
-============
+examples/train.py
+=================
 Training and evaluation loop utilities.
 
 Functions

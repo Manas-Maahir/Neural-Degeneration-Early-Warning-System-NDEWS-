@@ -1,6 +1,6 @@
 """
-src/model.py
-============
+examples/model.py
+=================
 CNN and MLP architectures used in the Training Instability Prediction project.
 
 Models
