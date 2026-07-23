@@ -1,6 +1,6 @@
 """
-run_pipeline.py
-===============
+examples/run_pipeline.py
+========================
 End-to-end demonstration pipeline for Training Instability Prediction.
 
 Walkthrough
@@ -19,24 +19,29 @@ the data it is scored on).  It is intended only as a quick smoke-test that
 the pipeline executes end-to-end without errors.
 
 For valid (held-out) evaluation, run:
-    python experiments/run_many_regimes.py --runs-per-regime 5
-and use the collected session CSVs with scripts/train_predictor.py
+    python examples/run_many_regimes.py --runs-per-regime 5
+and use the collected session CSVs with scripts/evaluate_predictor.py
 (leave-one-run-out cross-validation against held-out seeds).
 """
 
 import csv
+import sys
 from pathlib import Path
+
+# Make the repo root importable so `ndews` and the `examples` package resolve
+# whether or not the package was installed (`pip install -e .`).
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import torch
 import torch.nn as nn
 
-from src.dataset import get_cifar_loaders
-from src.labeller import get_instability_epoch
-from src.model import SimpleCNN
-from src.predictor import Predictor, canonical_aggregate_features, create_sliding_windows
-from src.seed_utils import seed_everything
-from src.signals import SignalLogger
-from src.train import eval_epoch, train_epoch
+from ndews.labeller import get_instability_epoch
+from ndews.predictor import Predictor, canonical_aggregate_features, create_sliding_windows
+from ndews.seed_utils import seed_everything
+from ndews.signals import SignalLogger
+from examples.dataset import get_cifar_loaders
+from examples.model import SimpleCNN
+from examples.train import eval_epoch, train_epoch
 
 # ---------------------------------------------------------------------------
 # Pipeline constants

@@ -1,6 +1,6 @@
 """
-src/signals.py
-==============
+ndews/signals.py
+================
 PyTorch hook infrastructure for extracting internal model signals during
 training. Metrics are recorded per forward/backward pass and averaged
 at epoch end by ``SignalLogger``.
@@ -80,7 +80,24 @@ def _pool_to_embeddings(x: torch.Tensor) -> torch.Tensor:
 # Hook implementations
 # ---------------------------------------------------------------------------
 
-class RepresentationEntropyHook:
+class _SignalHook:
+    """
+    Base for all signal hooks.
+
+    When ``train_only`` is true (the default), a hook records nothing while its
+    module is in evaluation mode, so validation forward/backward passes never
+    pollute the epoch's signal buffers.  ``SignalLogger`` sets this per-instance
+    from its own ``train_only`` flag; the class-level default keeps standalone
+    hook use unaffected.
+    """
+
+    train_only: bool = True
+
+    def _skip(self, module: nn.Module) -> bool:
+        return self.train_only and not module.training
+
+
+class RepresentationEntropyHook(_SignalHook):
     """
     Forward hook measuring the effective rank of the activation matrix.
 
@@ -108,6 +125,8 @@ class RepresentationEntropyHook:
         input: tuple[torch.Tensor, ...],
         output: torch.Tensor,
     ) -> None:
+        if self._skip(module):
+            return
         emb = _pool_to_embeddings(output.detach())  # [B, D]
         B, D = emb.shape[0], emb.shape[1] if emb.dim() > 1 else 1
         if B < 2 or D < 2:
@@ -137,7 +156,7 @@ class RepresentationEntropyHook:
         return sum(self._values) / len(self._values) if self._values else 0.0
 
 
-class FeatureReuseDetector:
+class FeatureReuseDetector(_SignalHook):
     """
     Forward hook for average off-diagonal cosine similarity of feature columns.
 
@@ -157,6 +176,8 @@ class FeatureReuseDetector:
         input: tuple[torch.Tensor, ...],
         output: torch.Tensor,
     ) -> None:
+        if self._skip(module):
+            return
         out = _pool_to_embeddings(output.detach())  # [B, D]
         if out.size(0) < 2:
             return
@@ -178,7 +199,7 @@ class FeatureReuseDetector:
         return sum(self._scores) / len(self._scores) if self._scores else 0.0
 
 
-class GradientDiversityTracker:
+class GradientDiversityTracker(_SignalHook):
     """
     Backward hook measuring variance of output gradients across the batch.
 
@@ -196,6 +217,8 @@ class GradientDiversityTracker:
         grad_input: tuple[torch.Tensor | None, ...],
         grad_output: tuple[torch.Tensor | None, ...],
     ) -> None:
+        if self._skip(module):
+            return
         grads = grad_output[0]
         if grads is None:
             return
@@ -215,7 +238,7 @@ class GradientDiversityTracker:
         return sum(self._variances) / len(self._variances) if self._variances else 0.0
 
 
-class NeuronSparsityTracker:
+class NeuronSparsityTracker(_SignalHook):
     """
     Forward hook measuring fraction of near-zero activations.
 
@@ -254,6 +277,8 @@ class NeuronSparsityTracker:
         input: tuple[torch.Tensor, ...],
         output: torch.Tensor,
     ) -> None:
+        if self._skip(module):
+            return
         out = output.detach()
         if out.numel() == 0:
             return
@@ -274,7 +299,7 @@ class NeuronSparsityTracker:
         return sum(self._values) / len(self._values) if self._values else 0.0
 
 
-class RepresentationalIsotropyTracker:
+class RepresentationalIsotropyTracker(_SignalHook):
     """
     Forward hook measuring uniformity of per-dimension activation variance.
 
@@ -301,6 +326,8 @@ class RepresentationalIsotropyTracker:
         input: tuple[torch.Tensor, ...],
         output: torch.Tensor,
     ) -> None:
+        if self._skip(module):
+            return
         emb = _pool_to_embeddings(output.detach())  # [B, D]
         if emb.numel() == 0 or emb.size(0) < 2 or emb.size(1) < 2:
             return
@@ -319,7 +346,7 @@ class RepresentationalIsotropyTracker:
         return sum(self._values) / len(self._values) if self._values else 0.0
 
 
-class ActivationScaleTracker:
+class ActivationScaleTracker(_SignalHook):
     """
     Forward hook for global RMS activation scale.
 
@@ -339,6 +366,8 @@ class ActivationScaleTracker:
         input: tuple[torch.Tensor, ...],
         output: torch.Tensor,
     ) -> None:
+        if self._skip(module):
+            return
         out = output.detach()
         if out.numel() == 0:
             return
@@ -366,11 +395,22 @@ class SignalLogger:
         Model to instrument.
     target_layers : list[str]
         Layer names from ``model.named_modules()``.
+    train_only : bool
+        When ``True`` (default), hooks record only while the module is in
+        training mode, so validation forward/backward passes do not pollute the
+        epoch's signal buffers.  Set ``False`` to record in every mode.
     """
 
-    def __init__(self, model: nn.Module, target_layers: list[str]) -> None:
+    def __init__(
+        self,
+        model: nn.Module,
+        target_layers: list[str],
+        *,
+        train_only: bool = True,
+    ) -> None:
         self.model = model
         self.target_layers = target_layers
+        self.train_only = train_only
 
         self._handles: list[torch.utils.hooks.RemovableHandle] = []
         self._entropy: dict[str, RepresentationEntropyHook] = {}
@@ -398,6 +438,9 @@ class SignalLogger:
             s_hook = NeuronSparsityTracker()
             i_hook = RepresentationalIsotropyTracker()
             a_hook = ActivationScaleTracker()
+
+            for hook in (e_hook, r_hook, g_hook, s_hook, i_hook, a_hook):
+                hook.train_only = self.train_only
 
             self._handles += [
                 module.register_forward_hook(e_hook),

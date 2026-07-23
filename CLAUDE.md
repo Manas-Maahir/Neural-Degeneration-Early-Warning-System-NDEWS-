@@ -4,7 +4,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Neural Degeneration Early Warning System (NDEWS) — a research framework for predicting training instability and representational collapse in neural networks. It extracts 6 internal signals (entropy, feature reuse, gradient diversity, sparsity, embedding variance, activation variance) from model layers via PyTorch hooks, trains a Random Forest predictor on sliding windows of those signals, and forecasts instability before validation loss crashes.
+Neural Degeneration Early Warning System (NDEWS) — a model-agnostic library for predicting training instability and representational collapse in neural networks. It extracts 6 internal signals (entropy, feature reuse, gradient diversity, sparsity, embedding variance, activation variance) from model layers via PyTorch hooks, then raises alerts via self-baselined anomaly detection (per-signal directional z-scores vs the run's own rolling baseline) — no pretraining required. An optional Random Forest predictor and a val-accuracy labeller layer on top when historical runs are available.
+
+**Package layout:** `ndews/` is the installable library (`import ndews`) with `CollapseMonitor` as the public entry point and zero CIFAR assumptions; `examples/` is the CIFAR-10 research harness that *consumes* the library (dataset, models, regimes, runners); `tests/` is the pytest suite; `analysis/` holds lead-time analysis and plotting.
+
+**Primary interface — [ndews/monitor.py](ndews/monitor.py):** `CollapseMonitor(model, layers=None, baseline_epochs=5, z_threshold=2.5, min_signals=2, predictor=None)`. Call `on_epoch_end(val_acc=...)` each epoch for a `MonitorReport` (`status` ∈ warming_up/ok/warning/collapse, `drifting_signals`, `probability`, `collapse_flag`). `suggest_layers(model)` auto-picks the last conv-like + last linear module. Use `close()` or the context manager to detach hooks.
 
 ## Setup & Commands
 
@@ -16,28 +20,29 @@ pip install -r requirements.txt
 
 | Task | Command |
 |------|---------|
-| Validate hook infrastructure | `python test_signals.py` |
-| Full pipeline (generate data → train predictor) | `python run_pipeline.py` |
-| Single experiment | `python experiments\baseline__run.py --regime normal --epochs 20` |
-| Single experiment with live collapse prediction | `python experiments\baseline__run.py --regime high_learning_rate --epochs 20 --predictor-path .\output\predictor\random_forest.pkl` |
-| Batch experiments across all regimes | `python experiments\run_many_regimes.py --runs-per-regime 3 --epochs 20` |
+| Run the test suite | `python -m pytest` |
+| Try the drop-in monitor demo | `python examples\quickstart.py` |
+| Full pipeline (generate data → train predictor) | `python examples\run_pipeline.py` |
+| Single experiment | `python examples\baseline_run.py --regime normal --epochs 20` |
+| Single experiment with live collapse prediction | `python examples\baseline_run.py --regime high_learning_rate --epochs 20 --predictor-path .\output\predictor\random_forest.pkl` |
+| Batch experiments across all regimes | `python examples\run_many_regimes.py --runs-per-regime 3 --epochs 20` |
 | Signal lead-time analysis (after batch run) | `python -m analysis.signal_lag --session-dir output\instability_runs\session_<stamp>` |
 
 ## Architecture
 
-### Data Flow (run_pipeline.py)
+### Data Flow (examples/run_pipeline.py)
 
 1. **Data generation** — Run healthy (`label_noise=0.0`) and unstable (`label_noise=0.8`) training regimes on CIFAR-10
 2. **Signal logging** — PyTorch hooks extract 6 metrics per forward/backward pass, averaged at epoch end
 3. **CSV export** — Per-epoch signals saved to `metrics_log.csv` (schema: `epoch`, `val_accuracy`, `regime`, `{layer}_{metric}` columns)
-4. **Instability labelling** — Validate accuracy histories scanned for sharp drops via `src/labeller.py`
+4. **Instability labelling** — Validate accuracy histories scanned for sharp drops via `ndews/labeller.py`
 5. **Sliding window transform** — Epoch sequences converted to supervised windows (`window_size=3`, `forecast_horizon=2`)
 6. **Random Forest training** — 300-tree ensemble saved to `output/predictor/random_forest.pkl`
 7. **Online prediction** — During live training, collapse probability emitted per epoch
 
 ### Key Modules
 
-**[src/signals.py](src/signals.py)** — Core instrumentation. `SignalLogger` registers all 6 hooks on named layers (e.g., `["conv2", "fc1"]`). Call `reset()` at epoch start, `get_epoch_signals()` at epoch end for a flat dict of averaged metrics. All hooks use `register_forward_hook` / `register_full_backward_hook` — the model is never modified.
+**[ndews/signals.py](ndews/signals.py)** — Core instrumentation. `SignalLogger` registers all 6 hooks on named layers (e.g., `["conv2", "fc1"]`). Call `reset()` at epoch start, `get_epoch_signals()` at epoch end for a flat dict of averaged metrics. All hooks use `register_forward_hook` / `register_full_backward_hook` — the model is never modified. `train_only=True` (default) makes every hook early-return when `not module.training`, so validation forward passes don't pollute the epoch's buffers.
 
 Six hook types (all canonical names exported as `CANONICAL_METRIC_SUFFIXES`):
 - `RepresentationEntropyHook` — Effective rank (Roy & Vetterli 2007): `exp(H(σ/Σσ))`, range `[1, min(B,D)]`; drop signals representational collapse
@@ -47,19 +52,21 @@ Six hook types (all canonical names exported as `CANONICAL_METRIC_SUFFIXES`):
 - `RepresentationalIsotropyTracker` — `mean_dim_var / max_dim_var`; close to 0 = dimensional collapse
 - `ActivationScaleTracker` — RMS activation magnitude; tracks explosion/vanishing
 
-**[src/predictor.py](src/predictor.py)** — `Predictor` class wraps `RandomForestClassifier`. `create_sliding_windows()` converts epoch-wise metric dicts into supervised (X, y) arrays. `canonical_aggregate_features()` averages per-metric-type across all layers into a 6-element feature vector for online inference. Schema version tracked in pickle payload.
+**[ndews/anomaly.py](ndews/anomaly.py)** — Self-baselined alert engine. `RollingBaseline` freezes per-signal mean/std over the first `baseline_epochs`. `directional_zscore()` scores each signal so positive = collapse-ward, via `COLLAPSE_DIRECTIONS` (rank/isotropy/gradient-diversity down = bad; feature-reuse/sparsity up = bad; activation-scale two-sided). Non-finite signals count as max-severity drift. `AnomalyEngine.score()` returns drifting signals + an alert when `>= min_signals` cross `z_threshold`. Pure NumPy, no training.
 
-**[src/labeller.py](src/labeller.py)** — `is_unstable()` detects accuracy drops ≥ 8% within a 5-epoch window (burn-in 10 epochs). `get_instability_epoch()` returns the first detection epoch or None. Both share `_scan_instability()` to avoid duplication.
+**[ndews/predictor.py](ndews/predictor.py)** — `Predictor` class wraps `RandomForestClassifier`. `create_sliding_windows()` converts epoch-wise metric dicts into supervised (X, y) arrays. `canonical_aggregate_features()` averages per-metric-type across all layers into a 6-element feature vector for online inference. Schema version tracked in pickle payload.
 
-**[src/evaluation.py](src/evaluation.py)** — Held-out evaluation. `RunData` dataclass holds per-run signals + ground truth. `leave_one_run_out_cv()` trains and evaluates the RF predictor via LORO-CV. `evaluate_baselines()` runs `MajorityClassBaseline`, `ValAccDropBaseline`, `RandomBaseline` on the same splits. `print_comparison_table()` shows predictor vs. baselines side-by-side.
+**[ndews/labeller.py](ndews/labeller.py)** — `is_unstable()` detects accuracy drops ≥ 8% within a 5-epoch window (burn-in 10 epochs). `get_instability_epoch()` returns the first detection epoch or None. Both share `_scan_instability()` to avoid duplication.
 
-**[src/regimes.py](src/regimes.py)** — Single source of truth for experiment configuration. `RegimeConfig` dataclass, `REGIME_REGISTRY` dict, `get_regime_config()`, `build_model()`, `resolve_target_layers()`. All experiment scripts import from here.
+**[ndews/evaluation.py](ndews/evaluation.py)** — Held-out evaluation. `RunData` dataclass holds per-run signals + ground truth. `leave_one_run_out_cv()` trains and evaluates the RF predictor via LORO-CV. `evaluate_baselines()` runs `MajorityClassBaseline`, `ValAccDropBaseline`, `RandomBaseline` on the same splits. `print_comparison_table()` shows predictor vs. baselines side-by-side.
 
-**[src/seed_utils.py](src/seed_utils.py)** — `seed_everything(seed)` sets `random`, `numpy`, `torch`, `torch.cuda`, `cudnn.deterministic=True`, `cudnn.benchmark=False`.
+**[examples/regimes.py](examples/regimes.py)** — Single source of truth for experiment configuration. `RegimeConfig` dataclass, `REGIME_REGISTRY` dict, `get_regime_config()`, `build_model()`, `resolve_target_layers()`. All experiment scripts import from here.
 
-**[src/dataset.py](src/dataset.py)** — `get_cifar_loaders()` produces CIFAR-10 loaders with optional `label_noise`, `class_imbalance`, `imbalance_classes`, and `train_fraction` stress parameters. Defaults to 0 DataLoader workers on Windows.
+**[ndews/seed_utils.py](ndews/seed_utils.py)** — `seed_everything(seed)` sets `random`, `numpy`, `torch`, `torch.cuda`, `cudnn.deterministic=True`, `cudnn.benchmark=False`.
 
-**[src/model.py](src/model.py)** — Three architectures: `SimpleCNN` (recommended hook layers: `conv2`, `fc1`), `DeepCNN` (hook layers: `conv3`, `fc1`), `TestMLP` (for fast unit tests). All accept `num_classes` parameter.
+**[examples/dataset.py](examples/dataset.py)** — `get_cifar_loaders()` produces CIFAR-10 loaders with optional `label_noise`, `class_imbalance`, `imbalance_classes`, and `train_fraction` stress parameters. Defaults to 0 DataLoader workers on Windows.
+
+**[examples/model.py](examples/model.py)** — Three architectures: `SimpleCNN` (recommended hook layers: `conv2`, `fc1`), `DeepCNN` (hook layers: `conv3`, `fc1`), `TestMLP` (for fast unit tests). All accept `num_classes` parameter.
 
 **[analysis/signal_lag.py](analysis/signal_lag.py)** — Temporal precedence analysis. `compute_signal_lags()` measures how many epochs before detected instability each signal shows a z-score > threshold relative to stable-run baseline. `print_lag_table()` displays results. CLI: `python -m analysis.signal_lag --session-dir <path>`.
 
@@ -67,7 +74,7 @@ Six hook types (all canonical names exported as `CANONICAL_METRIC_SUFFIXES`):
 
 ### Experiment Regimes
 
-Defined in [src/regimes.py](src/regimes.py):
+Defined in [examples/regimes.py](examples/regimes.py):
 
 | Regime | Perturbation |
 |--------|-------------|

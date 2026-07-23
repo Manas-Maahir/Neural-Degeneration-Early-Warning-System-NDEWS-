@@ -1,10 +1,10 @@
 [build-system]
-requires = ["setuptools>=68", "wheel"]
-build-backend = "setuptools.backends.legacy:build"
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
 
 [project]
 name = "ndews"
-version = "0.1.0"
+version = "0.2.0"
 description = "Neural Degeneration Early Warning System — predicts training instability via internal telemetry"
 requires-python = ">=3.10"
 dependencies = [
@@ -20,9 +20,18 @@ dependencies = [
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["src*", "analysis*"]
+# Only the library ships; the CIFAR harness under examples/ is not packaged.
+include = ["ndews*", "analysis*"]
+
+[tool.setuptools.package-data]
+ndews = ["py.typed"]
 
 [project.optional-dependencies]
 dev = [
     "pytest>=7.0",
 ]
+
+[tool.pytest.ini_options]
+# Put the repo root on sys.path so `import ndews` works without `pip install -e .`.
+pythonpath = ["."]
+testpaths = ["tests"]

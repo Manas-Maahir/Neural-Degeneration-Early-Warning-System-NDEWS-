@@ -1,33 +1,43 @@
 """
-experiments/baseline__run.py
-============================
-CLI runner for CIFAR-10 instability experiments with live metric logging.
+examples/baseline_run.py
+========================
+CLI runner for CIFAR-10 instability experiments, driven by the library's
+``ndews.CollapseMonitor``.
 
-Requires the package to be installed (from the project root):
-    pip install -e .
+This example *demonstrates the library* rather than re-implementing it: a single
+``CollapseMonitor`` handles signal collection, aggregation, self-baselined anomaly
+detection, and (optionally) the supervised online predictor. The runner keeps only the
+CIFAR/CLI concerns — data, model, LR schedule, and the configurable val-accuracy labeller
+that backs the ground-truth instability flags.
+
+Run from the project root (works with or without `pip install -e .`):
 
 Example usage:
-    python experiments/baseline__run.py --regime normal --epochs 20
-    python experiments/baseline__run.py --regime delayed_collapse --epochs 30
-    python experiments/baseline__run.py --regime high_learning_rate --epochs 20 \\
+    python examples/baseline_run.py --regime normal --epochs 20
+    python examples/baseline_run.py --regime delayed_collapse --epochs 30
+    python examples/baseline_run.py --regime high_learning_rate --epochs 20 \\
         --predictor-path ./output/predictor/random_forest.pkl
 """
 
 from __future__ import annotations
 
 import argparse
+import sys
 from pathlib import Path
+
+# Make the repo root importable so `ndews` and the `examples` package resolve
+# whether or not the package was installed (`pip install -e .`).
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import torch
 import torch.nn as nn
 
-from src.dataset import get_cifar_loaders
-from src.labeller import label_run
-from src.predictor import Predictor, canonical_aggregate_features
-from src.regimes import ALL_REGIMES, get_regime_config, build_model, resolve_target_layers
-from src.seed_utils import seed_everything
-from src.signals import SignalLogger
-from src.train import eval_epoch, train_epoch
+from ndews import CollapseMonitor
+from ndews.labeller import label_run
+from ndews.seed_utils import seed_everything
+from examples.dataset import get_cifar_loaders
+from examples.regimes import ALL_REGIMES, get_regime_config, build_model, resolve_target_layers
+from examples.train import eval_epoch, train_epoch
 
 
 # ---------------------------------------------------------------------------
@@ -65,7 +75,7 @@ def build_parser() -> argparse.ArgumentParser:
         type=str,
         default="normal",
         choices=ALL_REGIMES,
-        help="Training regime to use. See src/regimes.py for definitions.",
+        help="Training regime to use. See examples/regimes.py for definitions.",
     )
     parser.add_argument(
         "--model", type=str, default="simple", choices=["simple", "deep"],
@@ -89,6 +99,24 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--drop-window",     type=int,   default=5)
     parser.add_argument("--burn-in",         type=int,   default=10)
     parser.add_argument("--sustain-epochs",  type=int,   default=3)
+    parser.add_argument(
+        "--chance-level", type=float, default=0.10,
+        help="Flag runs stuck at/below this accuracy as unstable (CIFAR-10 chance=0.10). "
+             "Set to a negative value to disable.",
+    )
+    # -- CollapseMonitor anomaly-engine knobs (self-baselined; no pretraining) --
+    parser.add_argument(
+        "--baseline-epochs", type=int, default=5,
+        help="Warmup epochs the monitor freezes its per-signal baseline over.",
+    )
+    parser.add_argument(
+        "--z-threshold", type=float, default=2.5,
+        help="Per-signal directional drift cutoff, in standard deviations.",
+    )
+    parser.add_argument(
+        "--min-signals", type=int, default=2,
+        help="How many signals must drift (collapse-ward) to raise an anomaly alert.",
+    )
     parser.add_argument(
         "--predictor-path",
         type=str,
@@ -122,6 +150,9 @@ def main() -> None:
     class_imbalance = args.class_imbalance if args.class_imbalance is not None else regime_cfg.class_imbalance
     train_fraction  = args.train_fraction  if args.train_fraction  is not None else regime_cfg.train_fraction
 
+    # Negative disables the at-chance check; otherwise flag runs stuck at chance.
+    chance_level = args.chance_level if args.chance_level >= 0 else None
+
     if epochs < 1:
         raise ValueError(f"--epochs must be >= 1, got {epochs}")
 
@@ -144,36 +175,38 @@ def main() -> None:
     )
 
     model = build_model(args.model).to(device)
-    target_layers = resolve_target_layers(args.target_layers, args.model)
-    logger = SignalLogger(model, target_layers=target_layers)
+    target_layers = resolve_target_layers(args.model, args.target_layers)
 
     optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=weight_decay)
     criterion = nn.CrossEntropyLoss()
 
-    val_history: list[float] = []
-    online_predictor: Predictor | None = None
-    predictor_window: list[dict[str, float]] = []
-
+    # Resolve the optional supervised predictor. The monitor loads and manages it (its
+    # sliding window + schema-mismatch handling); we only decide whether to hand it a path.
+    predictor_arg: Path | None = None
     if not args.disable_collapse_probability:
         predictor_path = Path(args.predictor_path)
         if predictor_path.exists():
-            try:
-                online_predictor = Predictor.load(predictor_path)
-                print(
-                    f"[Predictor] Loaded {predictor_path} "
-                    f"(window={online_predictor.window_size}, "
-                    f"horizon={online_predictor.forecast_horizon})"
-                )
-            except Exception as exc:
-                print(f"[Predictor] Failed to load {predictor_path}: {exc}")
+            predictor_arg = predictor_path
         else:
             print(
                 f"[Predictor] Not found at {predictor_path}. "
-                "Run `python run_pipeline.py` first to train one."
+                "Run `python examples/run_pipeline.py` first to train one."
             )
 
+    val_history: list[float] = []
+
+    def labeller_state() -> dict:
+        return label_run(
+            val_history,
+            drop_threshold=args.drop_threshold,
+            window=args.drop_window,
+            burn_in=args.burn_in,
+            sustain_epochs=args.sustain_epochs,
+            chance_level=chance_level,
+        )
+
     print("=" * 110)
-    print("Training Instability Monitor (CIFAR-10)")
+    print("Training Instability Monitor (CIFAR-10) — powered by ndews.CollapseMonitor")
     print(
         f"regime={args.regime}  model={args.model}  device={device}  "
         f"epochs={epochs}  batch={args.batch_size}  lr={lr:.5f}  wd={weight_decay:.5f}"
@@ -181,6 +214,10 @@ def main() -> None:
     print(
         f"dataset_mods: label_noise={label_noise:.2f}  "
         f"class_imbalance={class_imbalance:.2f}  train_fraction={train_fraction:.2f}"
+    )
+    print(
+        f"anomaly: baseline_epochs={args.baseline_epochs}  "
+        f"z_threshold={args.z_threshold}  min_signals={args.min_signals}"
     )
     if regime_cfg.lr_boost_at_epoch is not None:
         print(
@@ -190,7 +227,16 @@ def main() -> None:
     print(f"tracked_layers={target_layers}")
     print("=" * 110)
 
-    try:
+    # The CollapseMonitor attaches hooks here and detaches them on context exit.
+    with CollapseMonitor(
+        model,
+        layers=target_layers,
+        baseline_epochs=args.baseline_epochs,
+        z_threshold=args.z_threshold,
+        min_signals=args.min_signals,
+        predictor=predictor_arg,
+    ) as monitor:
+        has_predictor = monitor._predictor is not None
         for epoch in range(1, epochs + 1):
             # Apply scheduled LR boost (e.g. delayed_collapse regime).
             if (
@@ -205,51 +251,32 @@ def main() -> None:
                     f"(×{regime_cfg.lr_boost_factor})"
                 )
 
-            logger.reset()
             train_loss = train_epoch(
                 model, train_loader, optimizer, criterion, device, show_progress=False
             )
-            # Read training-time signals BEFORE eval (eval forward pass would
-            # accumulate into the same hook buffers).
-            signals = logger.get_epoch_signals()
-            agg = canonical_aggregate_features(signals)
-
+            # The monitor's train_only guard means the eval forward pass below does not
+            # pollute the epoch's signal buffers, so scoring after eval is safe.
             val_loss, val_acc = eval_epoch(
                 model, val_loader, criterion, device, show_progress=False
             )
 
-            val_history.append(val_acc)
-            collapse = label_run(
-                val_history,
-                drop_threshold=args.drop_threshold,
-                window=args.drop_window,
-                burn_in=args.burn_in,
-                sustain_epochs=args.sustain_epochs,
-            )
-            peak_acc = max(val_history)
+            report = monitor.on_epoch_end(val_acc=val_acc)
+            agg = report.aggregated
 
-            collapse_probability: float | None = None
-            if online_predictor is not None:
-                predictor_window.append(agg)
-                if len(predictor_window) > online_predictor.window_size:
-                    predictor_window = predictor_window[-online_predictor.window_size:]
-                if len(predictor_window) == online_predictor.window_size:
-                    collapse_probability = online_predictor.predict_probability_from_window(
-                        predictor_window
-                    )
+            val_history.append(val_acc)
+            collapse = labeller_state()
+            peak_acc = max(val_history)
 
             progress_pct = (epoch / epochs) * 100.0
             print(f"Epoch {epoch}/{epochs} | {progress_pct:.0f}% done")
-            if online_predictor is None:
-                print("Collapse Probability = N/A")
-            elif collapse_probability is None:
-                remaining = online_predictor.window_size - len(predictor_window)
-                print(
-                    f"Collapse Probability = warming_up "
-                    f"({remaining} more epoch{'s' if remaining != 1 else ''})"
-                )
+            print(f"Monitor Status         = {report.status}")
+            print(f"Drifting Signals       = {report.drifting_signals or 'none'}")
+            if not has_predictor:
+                print("Collapse Probability   = N/A")
+            elif report.probability is None:
+                print("Collapse Probability   = warming_up")
             else:
-                print(f"Collapse Probability = {collapse_probability:.2f}")
+                print(f"Collapse Probability   = {report.probability:.2f}")
 
             print(f"Effective Rank         = {agg['entropy']:.3f}")
             print(f"Gradient Diversity     = {agg['gradient_diversity']:.6f}")
@@ -267,19 +294,10 @@ def main() -> None:
             )
             print("Layer-wise detail:")
             for layer in target_layers:
-                print("    " + _format_layer_metrics(layer, signals))
+                print("    " + _format_layer_metrics(layer, report.signals))
             print("-" * 110)
 
-    finally:
-        logger.remove_hooks()
-
-    final_state = label_run(
-        val_history,
-        drop_threshold=args.drop_threshold,
-        window=args.drop_window,
-        burn_in=args.burn_in,
-        sustain_epochs=args.sustain_epochs,
-    )
+    final_state = labeller_state()
     print("Run complete.")
     print(
         f"Final: unstable={final_state['unstable']}  "

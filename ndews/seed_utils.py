@@ -1,11 +1,11 @@
 """
-src/seed_utils.py
-=================
+ndews/seed_utils.py
+===================
 Deterministic seeding for fully reproducible training runs.
 
 Usage
 -----
-    from src.seed_utils import seed_everything
+    from ndews.seed_utils import seed_everything
     seed_everything(42)
 
 Notes

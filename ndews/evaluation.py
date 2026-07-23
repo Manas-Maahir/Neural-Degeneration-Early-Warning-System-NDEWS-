@@ -1,6 +1,6 @@
 """
-src/evaluation.py
-=================
+ndews/evaluation.py
+===================
 Leave-one-run-out cross-validation (LORO-CV) and baseline comparisons
 for the instability predictor.
 
@@ -14,7 +14,7 @@ Design
 
 Typical usage
 -------------
-    from src.evaluation import RunData, leave_one_run_out_cv, evaluate_baselines
+    from ndews.evaluation import RunData, leave_one_run_out_cv, evaluate_baselines
 
     runs = [RunData(run_id, metrics_seq, val_accs, instability_epoch), ...]
     cv_result = leave_one_run_out_cv(runs, window_size=3, forecast_horizon=2)
@@ -24,10 +24,12 @@ Typical usage
 from __future__ import annotations
 
 import math
+import warnings
 from dataclasses import dataclass, field
 from typing import Any, Callable, Sequence
 
 import numpy as np
+from sklearn.exceptions import UndefinedMetricWarning
 from sklearn.metrics import (
     accuracy_score,
     f1_score,
@@ -36,7 +38,7 @@ from sklearn.metrics import (
     roc_auc_score,
 )
 
-from src.predictor import (
+from ndews.predictor import (
     Predictor,
     canonical_aggregate_features,
     create_sliding_windows,
@@ -85,10 +87,12 @@ def _compute_metrics(
         "recall":    float(recall_score(y_true, y_pred, zero_division=0)),
     }
     if y_prob is not None:
-        try:
-            result["roc_auc"] = float(roc_auc_score(y_true, y_prob))
-        except ValueError:
-            result["roc_auc"] = float("nan")
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UndefinedMetricWarning)
+            try:
+                result["roc_auc"] = float(roc_auc_score(y_true, y_prob))
+            except ValueError:
+                result["roc_auc"] = float("nan")
     else:
         result["roc_auc"] = float("nan")
     return result
@@ -100,6 +104,10 @@ def _aggregate_folds(fold_metrics: list[dict[str, float]]) -> dict[str, float]:
         return {}
     agg: dict[str, float] = {}
     for key in fold_metrics[0]:
+        # Skip non-numeric columns (e.g. run_id) — only aggregate real numbers.
+        first = fold_metrics[0][key]
+        if isinstance(first, bool) or not isinstance(first, (int, float)):
+            continue
         vals = [m[key] for m in fold_metrics if not math.isnan(m[key])]
         if vals:
             agg[f"{key}_mean"] = float(np.mean(vals))
@@ -119,6 +127,7 @@ def leave_one_run_out_cv(
     *,
     window_size: int = 3,
     forecast_horizon: int = 2,
+    label_mode: str = "detect",
     predictor_kwargs: dict[str, Any] | None = None,
     aggregate_fn: Callable[[dict[str, float]], dict[str, float]] = canonical_aggregate_features,
     verbose: bool = True,
@@ -192,6 +201,7 @@ def leave_one_run_out_cv(
                 forecast_horizon=forecast_horizon,
                 instability_epoch=run.instability_epoch,
                 feature_keys=feature_keys,
+                label_mode=label_mode,
             )
             X_train.extend(X_i)
             y_train.extend(y_i)
@@ -209,6 +219,10 @@ def leave_one_run_out_cv(
             **predictor_kwargs,
         )
         predictor.train(X_train, y_train)
+        # Calibrate the decision threshold on the training fold (uses unbiased
+        # OOB probabilities) so held-out hard predictions reflect a usable
+        # operating point rather than the saturated 0.5 default.
+        predictor.tune_threshold(X_train, y_train)
 
         # Evaluate on held-out run.
         X_test, y_test = create_sliding_windows(
@@ -217,6 +231,7 @@ def leave_one_run_out_cv(
             forecast_horizon=forecast_horizon,
             instability_epoch=held_run.instability_epoch,
             feature_keys=feature_keys,
+            label_mode=label_mode,
         )
 
         if not X_test:
@@ -317,16 +332,28 @@ class ValAccDropBaseline:
         *,
         window_size: int,
         forecast_horizon: int,
+        instability_epoch: int | None = None,
+        label_mode: str = "forecast",
     ) -> list[int]:
         """
         Produce a predicted label for each sliding window position.
 
         Positive (1) when: ``peak_in_window − last_in_window > drop_threshold``.
+
+        ``instability_epoch``/``label_mode`` mirror :func:`create_sliding_windows`
+        so the produced predictions stay aligned with the predictor's windows
+        (in ``"detect"`` mode the pure-aftermath windows are skipped identically).
         """
         n = len(val_accuracies)
         max_start = n - window_size - forecast_horizon + 1
         preds: list[int] = []
         for start in range(max_start):
+            if (
+                label_mode == "detect"
+                and instability_epoch is not None
+                and start > instability_epoch
+            ):
+                continue
             window_vals = val_accuracies[start : start + window_size]
             peak = max(window_vals)
             last = window_vals[-1]
@@ -367,6 +394,7 @@ def evaluate_baselines(
     *,
     window_size: int = 3,
     forecast_horizon: int = 2,
+    label_mode: str = "detect",
     val_acc_drop_threshold: float = 0.05,
     verbose: bool = True,
 ) -> dict[str, dict[str, Any]]:
@@ -381,6 +409,9 @@ def evaluate_baselines(
         Same list passed to ``leave_one_run_out_cv``.
     window_size, forecast_horizon : int
         Must match the values used in the predictor LORO evaluation.
+    label_mode : str
+        Must match the value used in ``leave_one_run_out_cv`` so baseline windows
+        align with the predictor's. See :func:`create_sliding_windows`.
     val_acc_drop_threshold : float
         Drop threshold for ``ValAccDropBaseline``.
     verbose : bool
@@ -407,6 +438,7 @@ def evaluate_baselines(
                 forecast_horizon=forecast_horizon,
                 instability_epoch=held_run.instability_epoch,
                 feature_keys=["_"],
+                label_mode=label_mode,
             )
             if not y_test:
                 continue
@@ -416,6 +448,8 @@ def evaluate_baselines(
                     held_run.val_accuracies,
                     window_size=window_size,
                     forecast_horizon=forecast_horizon,
+                    instability_epoch=held_run.instability_epoch,
+                    label_mode=label_mode,
                 )
                 y_prob = [float(p) for p in y_pred]
             else:
@@ -431,6 +465,7 @@ def evaluate_baselines(
                         forecast_horizon=forecast_horizon,
                         instability_epoch=run.instability_epoch,
                         feature_keys=["_"],
+                        label_mode=label_mode,
                     )
                     train_y.extend(y_i)
 
@@ -448,6 +483,80 @@ def evaluate_baselines(
             print(f"[Baseline] {name}:")
             for key, val in sorted(agg.items()):
                 print(f"  {key:<28s} = {val:.4f}")
+
+    return results
+
+
+# ---------------------------------------------------------------------------
+# Forecasting: lead-time (horizon) sweep
+# ---------------------------------------------------------------------------
+
+def forecast_horizon_sweep(
+    runs: list[RunData],
+    *,
+    horizons: Sequence[int] = (1, 2, 3, 5, 8),
+    window_size: int = 3,
+    label_mode: str = "forecast",
+    val_acc_drop_threshold: float = 0.05,
+    predictor_kwargs: dict[str, Any] | None = None,
+    verbose: bool = True,
+) -> dict[int, dict[str, Any]]:
+    """
+    Measure forecasting skill as a function of lead time (``forecast_horizon``).
+
+    For each horizon ``h`` this runs the full LORO-CV predictor evaluation and
+    the ``val_acc_drop`` baseline at that horizon (``label_mode="forecast"`` by
+    default — positive windows are strictly *before* collapse onset). The result
+    answers the research question: how many epochs ahead can internal signals
+    forecast collapse, and do they beat simply watching validation accuracy?
+
+    Returns
+    -------
+    dict[int, dict] keyed by horizon, each with:
+        ``predictor``    — aggregate LORO metrics for the RF predictor
+        ``val_acc_drop`` — aggregate LORO metrics for the val-accuracy baseline
+        ``class_counts`` — {"positive": n, "negative": n} across folds
+    """
+    results: dict[int, dict[str, Any]] = {}
+    base_key = f"val_acc_drop_{val_acc_drop_threshold}"
+
+    for h in horizons:
+        cv = leave_one_run_out_cv(
+            runs,
+            window_size=window_size,
+            forecast_horizon=h,
+            label_mode=label_mode,
+            predictor_kwargs=predictor_kwargs,
+            verbose=False,
+        )
+        base = evaluate_baselines(
+            runs,
+            window_size=window_size,
+            forecast_horizon=h,
+            label_mode=label_mode,
+            val_acc_drop_threshold=val_acc_drop_threshold,
+            verbose=False,
+        )
+        pred_agg = cv["aggregate"]
+        base_agg = base.get(base_key, {}).get("aggregate", {})
+        results[int(h)] = {
+            "predictor": pred_agg,
+            "val_acc_drop": base_agg,
+            "class_counts": cv["class_counts"],
+        }
+
+        if verbose:
+            def _g(agg: dict[str, float], key: str) -> float:
+                return agg.get(key, float("nan"))
+            print(
+                f"  h={h:>2} | "
+                f"predictor roc_auc={_g(pred_agg, 'roc_auc_mean'):.3f} "
+                f"f1={_g(pred_agg, 'f1_mean'):.3f} "
+                f"recall={_g(pred_agg, 'recall_mean'):.3f} "
+                f"|| val_acc_drop roc_auc={_g(base_agg, 'roc_auc_mean'):.3f} "
+                f"f1={_g(base_agg, 'f1_mean'):.3f} "
+                f"| pos_windows={cv['class_counts']['positive']}"
+            )
 
     return results
 

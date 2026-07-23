@@ -1,6 +1,6 @@
 """
-src/dataset.py
-==============
+examples/dataset.py
+===================
 CIFAR-10 data loading utilities with optional stress-regime controls.
 
 Supported train-set perturbations:
@@ -90,6 +90,7 @@ def get_cifar_loaders(
     class_imbalance: float = 1.0,
     imbalance_classes: tuple[int, ...] = (0, 1, 2, 3, 4),
     train_fraction: float = 1.0,
+    augment: bool = True,
     seed: int = 42,
 ) -> tuple[DataLoader, DataLoader]:
     """
@@ -114,6 +115,10 @@ def get_cifar_loaders(
         Class ids to downsample when ``class_imbalance < 1``.
     train_fraction : float
         Fraction of train data to retain after imbalance filtering.
+    augment : bool
+        Apply train-time augmentation (RandomCrop + RandomHorizontalFlip).
+        Set ``False`` to study memorization/overfitting — augmentation
+        suppresses the very degeneration these regimes are meant to induce.
     seed : int
         RNG seed used for deterministic perturbations and subsampling.
     """
@@ -123,22 +128,32 @@ def get_cifar_loaders(
 
     use_pin_memory = pin_memory and torch.cuda.is_available()
 
-    transform = transforms.Compose([
+    val_transform = transforms.Compose([
         transforms.ToTensor(),
         transforms.Normalize(_MEAN, _STD),
     ])
+    if augment:
+        train_transform = transforms.Compose([
+            transforms.RandomCrop(32, padding=4),
+            transforms.RandomHorizontalFlip(),
+            transforms.ToTensor(),
+            transforms.Normalize(_MEAN, _STD),
+        ])
+    else:
+        # No augmentation — let the model memorize the (small) train set.
+        train_transform = val_transform
 
     train_set = torchvision.datasets.CIFAR10(
         root=data_root,
         train=True,
         download=True,
-        transform=transform,
+        transform=train_transform,
     )
     val_set = torchvision.datasets.CIFAR10(
         root=data_root,
         train=False,
         download=True,
-        transform=transform,
+        transform=val_transform,
     )
 
     # Apply label noise in-place on the base CIFAR targets list.

@@ -1,16 +1,15 @@
 """
-experiments/run_many_regimes.py
-===============================
+examples/run_many_regimes.py
+============================
 Batch runner for instability experiments across multiple regimes and seeds.
 
 Stores per-run CSV logs, a run-level summary CSV, and a manifest JSON.
 
-Requires the package to be installed (from the project root):
-    pip install -e .
+Run from the project root (works with or without `pip install -e .`):
 
 Example:
-    python experiments/run_many_regimes.py --runs-per-regime 5 --epochs 20
-    python experiments/run_many_regimes.py --regimes delayed_collapse,normal --runs-per-regime 5
+    python examples/run_many_regimes.py --runs-per-regime 5 --epochs 20
+    python examples/run_many_regimes.py --regimes delayed_collapse,normal --runs-per-regime 5
 """
 
 from __future__ import annotations
@@ -18,19 +17,24 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import sys
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+# Make the repo root importable so `ndews` and the `examples` package resolve
+# whether or not the package was installed (`pip install -e .`).
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
 import torch
 import torch.nn as nn
 
-from src.dataset import get_cifar_loaders
-from src.labeller import label_run
-from src.regimes import ALL_REGIMES, get_regime_config, build_model, resolve_target_layers
-from src.seed_utils import seed_everything
-from src.signals import CANONICAL_METRIC_SUFFIXES, SignalLogger
-from src.train import eval_epoch, train_epoch
+from ndews.labeller import label_run
+from ndews.seed_utils import seed_everything
+from ndews.signals import CANONICAL_METRIC_SUFFIXES, SignalLogger
+from examples.dataset import get_cifar_loaders
+from examples.regimes import ALL_REGIMES, get_regime_config, build_model, resolve_target_layers
+from examples.train import eval_epoch, train_epoch
 
 
 # ---------------------------------------------------------------------------
@@ -102,6 +106,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--drop-window",     type=int,   default=5)
     parser.add_argument("--burn-in",         type=int,   default=10)
     parser.add_argument("--sustain-epochs",  type=int,   default=3)
+    parser.add_argument(
+        "--chance-level", type=float, default=0.10,
+        help="Flag runs stuck at/below this accuracy as unstable (CIFAR-10 chance=0.10). "
+             "Set to a negative value to disable.",
+    )
 
     # Optional global overrides (applied on top of regime defaults).
     parser.add_argument("--lr",              type=float, default=None)
@@ -124,6 +133,9 @@ def main() -> None:
     if args.sustain_epochs < 1:
         raise ValueError(f"--sustain-epochs must be >= 1, got {args.sustain_epochs}")
 
+    # Negative disables the at-chance check; otherwise flag runs stuck at chance.
+    chance_level = args.chance_level if args.chance_level >= 0 else None
+
     regimes = ALL_REGIMES if args.regimes == "all" else _parse_csv_list(args.regimes)
     unknown = [r for r in regimes if r not in ALL_REGIMES]
     if unknown:
@@ -144,7 +156,7 @@ def main() -> None:
     runs_dir = session_dir / "runs"
     runs_dir.mkdir(parents=True, exist_ok=True)
 
-    target_layers = resolve_target_layers(args.target_layers, args.model)
+    target_layers = resolve_target_layers(args.model, args.target_layers)
 
     print("=" * 120)
     print("Batch Instability Experiment Runner")
@@ -160,6 +172,12 @@ def main() -> None:
 
     for regime in regimes:
         regime_cfg = get_regime_config(regime)
+
+        # A regime may pin its own architecture / augmentation (endogenous
+        # collapse regimes use DeepCNN and/or augmentation off).
+        regime_model = regime_cfg.model or args.model
+        regime_layers = resolve_target_layers(regime_model, args.target_layers)
+        regime_augment = regime_cfg.augment
 
         epochs = args.epochs if args.epochs is not None else regime_cfg.epochs
         lr = args.lr if args.lr is not None else regime_cfg.lr
@@ -206,11 +224,12 @@ def main() -> None:
                     label_noise=label_noise,
                     class_imbalance=class_imbalance,
                     train_fraction=train_fraction,
+                    augment=regime_augment,
                     seed=seed,
                 )
 
-                model = build_model(args.model).to(device)
-                logger = SignalLogger(model, target_layers=target_layers)
+                model = build_model(regime_model).to(device)
+                logger = SignalLogger(model, target_layers=regime_layers)
                 optimizer = torch.optim.Adam(
                     model.parameters(), lr=lr, weight_decay=weight_decay,
                 )
@@ -244,6 +263,7 @@ def main() -> None:
                             window=args.drop_window,
                             burn_in=args.burn_in,
                             sustain_epochs=args.sustain_epochs,
+                            chance_level=chance_level,
                         )
 
                         row: dict[str, Any] = {
@@ -257,8 +277,8 @@ def main() -> None:
                             "peak_val_acc":       max(val_history),
                             "unstable":           bool(collapse["unstable"]),
                             "instability_epoch":  collapse["instability_epoch"],
-                            "model":              args.model,
-                            "target_layers":      "|".join(target_layers),
+                            "model":              regime_model,
+                            "target_layers":      "|".join(regime_layers),
                             "lr":                 lr,
                             "weight_decay":       weight_decay,
                             "label_noise":        label_noise,
@@ -278,6 +298,7 @@ def main() -> None:
                         window=args.drop_window,
                         burn_in=args.burn_in,
                         sustain_epochs=args.sustain_epochs,
+                        chance_level=chance_level,
                     )
                     _ensure_csv(run_csv, rows)
                     summary: dict[str, Any] = {

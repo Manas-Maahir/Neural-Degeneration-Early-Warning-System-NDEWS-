@@ -248,7 +248,7 @@ def plot_cv_metrics(
     Parameters
     ----------
     cv_result : dict
-        Return value of ``src.evaluation.leave_one_run_out_cv``.
+        Return value of ``ndews.evaluation.leave_one_run_out_cv``.
     metrics : sequence of str
         Which metric columns to plot.
     """
@@ -312,7 +312,7 @@ def plot_feature_importance(
     Parameters
     ----------
     predictor : Predictor
-        A trained ``src.predictor.Predictor`` instance.
+        A trained ``ndews.predictor.Predictor`` instance.
     top_n : int
         Show only the top N most important features.
     """
@@ -327,9 +327,19 @@ def plot_feature_importance(
 
     importances: np.ndarray = rf.feature_importances_
     n_features = len(importances)
+    window_size = int(getattr(predictor, "window_size", 1) or 1)
 
     if feature_keys and len(feature_keys) == n_features:
-        labels = feature_keys
+        labels = list(feature_keys)
+    elif feature_keys and len(feature_keys) * window_size == n_features:
+        # Windowed features are flattened step-outer, key-inner (see
+        # predictor._flatten_window): index = step * n_keys + k. Label each with
+        # its metric and how many epochs back in the window it came from.
+        n_keys = len(feature_keys)
+        labels = [
+            f"{feature_keys[i % n_keys]} @t-{window_size - 1 - (i // n_keys)}"
+            for i in range(n_features)
+        ]
     else:
         labels = [f"feature_{i}" for i in range(n_features)]
 
@@ -350,6 +360,61 @@ def plot_feature_importance(
     ax.set_xlabel("Mean Decrease in Impurity")
     ax.set_title(title)
     ax.grid(True, axis="x", alpha=0.3)
+    fig.tight_layout()
+    return fig
+
+
+# ---------------------------------------------------------------------------
+# Forecasting horizon sweep
+# ---------------------------------------------------------------------------
+
+def plot_horizon_sweep(
+    sweep_result: dict[int, dict[str, Any]],
+    *,
+    metric: str = "roc_auc",
+    title: str | None = None,
+    figsize: tuple[float, float] = (8, 5),
+) -> plt.Figure:
+    """
+    Plot forecasting skill vs lead time: RF predictor (internal signals) against
+    the val-accuracy-drop baseline, over forecast horizons.
+
+    Parameters
+    ----------
+    sweep_result : dict
+        Return value of ``ndews.evaluation.forecast_horizon_sweep``.
+    metric : str
+        Base metric name, e.g. ``"roc_auc"``, ``"f1"``, ``"recall"`` — the
+        ``"{metric}_mean"``/``"{metric}_std"`` keys are read from each aggregate.
+    """
+    horizons = sorted(sweep_result.keys())
+    mean_key, std_key = f"{metric}_mean", f"{metric}_std"
+
+    def _series(side: str, key: str) -> list[float]:
+        return [sweep_result[h][side].get(key, float("nan")) for h in horizons]
+
+    pred_mean = _series("predictor", mean_key)
+    pred_std = _series("predictor", std_key)
+    base_mean = _series("val_acc_drop", mean_key)
+
+    fig, ax = plt.subplots(figsize=figsize)
+    ax.errorbar(
+        horizons, pred_mean, yerr=pred_std, marker="o", capsize=3,
+        color="#1976D2", linewidth=1.6, label="RF predictor (internal signals)",
+    )
+    ax.plot(
+        horizons, base_mean, marker="s", linestyle="--",
+        color="#F57C00", linewidth=1.4, label="val-accuracy-drop baseline",
+    )
+    if metric == "roc_auc":
+        ax.axhline(0.5, color="gray", linewidth=0.8, linestyle=":", label="chance")
+
+    ax.set_xlabel("Forecast horizon (epochs ahead of collapse onset)")
+    ax.set_ylabel(metric)
+    ax.set_title(title or f"Forecasting skill vs lead time ({metric})")
+    ax.set_xticks(horizons)
+    ax.grid(True, alpha=0.3)
+    ax.legend(fontsize=8)
     fig.tight_layout()
     return fig
 
